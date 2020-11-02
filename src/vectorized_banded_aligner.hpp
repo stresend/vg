@@ -8,6 +8,7 @@
 #define VG_VECTORIZED_BANDED_ALIGNER_HPP_INCLUDED
 
 #include<limits>
+#include<cstdint>
 #include<immintrin.h>
 
 namespace vg {
@@ -56,6 +57,9 @@ struct BandedVectorMatrix {
     int64_t num_diags;
     int64_t num_cols;
 };
+
+void init_BandedVectorMatrix(BandedVectorMatrix& matrix, int64_t first_diag,
+                             int64_t num_diags, int64_t num_cols);
 
 }
 
