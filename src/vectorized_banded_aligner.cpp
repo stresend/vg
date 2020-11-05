@@ -19,6 +19,10 @@ BandedVectorAligner* BandedVectorAligner::init() {
     return aligner;
 }
 
+void BandedVectorAligner::destroy() {
+    heap->destroy();
+}
+
 BandedVectorHeap* BandedVectorHeap::init() {
     static_assert(init_block_size > sizeof(BandedVectorHeap), "heap must fit within the initial block");
     BandedVectorMemoryBlock* init_block = BandedVectorMemoryBlock::init(init_block_size);

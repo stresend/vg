@@ -24,10 +24,16 @@ struct BandedVectorHeap;
  */
 struct BandedVectorAligner {
     
-    
+    // constructor
     static BandedVectorAligner* init();
+    // destructor
+    void destroy();
+    
+    // TODO: design interface
     
 private:
+    
+    // TODO: design members
     
     BandedVectorHeap* heap;
     
