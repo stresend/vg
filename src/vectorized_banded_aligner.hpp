@@ -10,6 +10,7 @@
 #include<limits>
 #include<cstdint>
 #include<immintrin.h>
+#include<algorithm>
 
 namespace vg {
 
@@ -51,6 +52,9 @@ struct BandedVectorMatrix {
     // entries up and to the left of the indicated vector in the
     // full matrix
     int vector_diagonal(int vec_idx);
+   
+    // returns number of vectors in band
+    int get_band_size();
     
     SWVector* vectors;
     int64_t first_diag;
