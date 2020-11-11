@@ -164,7 +164,7 @@ struct BandedVectorMatrix {
     int64_t num_cols;
 };
 
-void init_BandedVectorMatrix(BandedVectorMatrix& matrix, int64_t first_diag,
+void init_BandedVectorMatrix(BandedVectorHeap* heap, BandedVectorMatrix& matrix, int64_t first_diag,
                              int64_t num_diags, int64_t num_cols);
 
 }
