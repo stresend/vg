@@ -13,12 +13,16 @@
 #include<algorithm>
 #include<iostream>
 
+#include "handle.hpp"
+#include "algorithms/topological_sort.hpp"
+
 namespace vg {
 
 using namespace std;
 
 // forward declaration
 struct BandedVectorHeap;
+struct BandedVectorMatrix;
 
 /*
  * Core aligner object for vectorized banded global alignment
@@ -26,16 +30,21 @@ struct BandedVectorHeap;
 struct BandedVectorAligner {
     
     // constructor
-    static BandedVectorAligner* init();
+    static BandedVectorAligner* init(Alignment& alignment, HandleGraph& g, int64_t band_padding, 
+		                     bool permissive_banding = true, bool adjust_for_base_quality = false);
     // destructor
     void destroy();
+    // align function: currently aligns the single matrix in the aligner, will eventually work on an array of them
+    void align(int8_t* score_mat, int8_t* nt_table, int8_t gap_open, int8_t gap_extend);
     
-    // TODO: design interface
+    // TODO: design more interface
     
 private:
-    
-    // TODO: design members
-    
+    BandedVectorMatrix* banded_matrices;//I noticed banded_global_aligner has a vector of matrices, so I decided to use a pointer
+    int number_of_nodes;
+    handle_t* topological_order;
+    HandleGraph& graph;
+    Alignment& alignment;
     BandedVectorHeap* heap;
     
     
@@ -157,15 +166,26 @@ struct BandedVectorMatrix {
    
     // returns number of vectors in band
     int get_band_size();
+    //fill matrix function. this is where the dynamic programming is
+    void fill_matrix(HandleGraph& graph, int8_t* score_mat, int8_t* nt_table, 
+		     int8_t gap_open, int8_t gap_extend, bool qual_adjusted);
+    //debugging: prints full matrix
+    void print_full_matrix();
+    //debugging: prints matrix as rectangularized band
+    void print_rectangularized_band();
+    
 
-    SWVector* vectors;
+    SWVector* vectors; 
     int64_t first_diag;
     int64_t num_diags;
     int64_t num_cols;
+    Alignment& alignment;
+    handle_t node;
+    int8_t* score_mat;
 };
 
-void init_BandedVectorMatrix(BandedVectorHeap* heap, BandedVectorMatrix& matrix, int64_t first_diag,
-                             int64_t num_diags, int64_t num_cols);
+void init_BandedVectorMatrix(BandedVectorMatrix& matrix, BandedVectorHeap* heap, Alignment& alignment, handle_t node, 
+		             int8_t* score_mat, int64_t first_diag, int64_t num_diags, int64_t num_cols);
 
 }
 

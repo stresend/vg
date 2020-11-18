@@ -5,10 +5,11 @@
  *
  */
 
-//#define init_BandedVectorMatrix_debug
+#define init_BandedVectorMatrix_debug
 
 #include "vectorized_banded_aligner.hpp"
 #include<iostream>
+#include<limits>
 
 using namespace std;
 
@@ -17,11 +18,22 @@ namespace vg {
 
 const size_t BandedVectorHeap::init_block_size = (1 << 20); // 1 MB
 
-BandedVectorAligner* BandedVectorAligner::init() {
+BandedVectorAligner* BandedVectorAligner::init(Alignment& alignment, HandleGraph& g, int64_t band_padding, 
+                                               bool permissive_banding, bool adjust_for_base_quality) {
 
     BandedVectorHeap* heap = BandedVectorHeap::init();
     BandedVectorAligner* aligner = (BandedVectorAligner*) heap->irreversible_alloc(sizeof(BandedVectorAligner));
     aligner->heap = heap;
+    aligner->graph = g;
+    aligner->alignment = alignment;
+
+    //convert vector made from topological sort into array
+    vector<handle_t> topo_order = algorithms::lazier_topological_order(&g);
+    aligner->number_of_nodes = topo_order.size();
+    aligner->topological_order = (handle_t*) heap->alloc(sizeof(handle_t)*aligner->number_of_nodes);
+    for(int i = 0; i < aligner->number_of_nodes; i++){
+	    aligner->topological_order[i] = topo_order[i];
+    }
     return aligner;
 }
 
@@ -176,7 +188,7 @@ int BandedVectorMatrix::vector_above(int vec_idx){
 }
 
 int BandedVectorMatrix::vector_below(int vec_idx){
-    return min<int64_t>(get_band_size(), vec_idx+num_cols+((vec_idx)/num_cols))%get_band_size();
+    return min<int64_t>(get_band_size(), vec_idx+num_cols+1)%get_band_size();
 }
 
 int BandedVectorMatrix::vector_diagonal(int vec_idx){
@@ -187,6 +199,68 @@ int BandedVectorMatrix::get_band_size(){
     return num_cols+(num_cols+1)*((num_diags-1)/8)+1;
 }
 
+//dynamic programming section
+void BandedVectorMatrix::fill_matrix(HandleGraph& graph, int8_t* score_mat, int8_t* nt_table, 
+		                     int8_t gap_open, int8_t gap_extend, bool qual_adjusted){
+    //initialize gap_open and gap_extend vectors -- would it be best to keep in BandedVectorMatrix or just 
+    __m128i gap_extend_vector = _mm_set1_epi16(gap_extend);
+    __m128i gap_open_vector = _mm_set1_epi16(gap_open);
+
+
+    //initialize extra gap extension vectors -- thanks dozeu
+    __m128i gap_extend1 = _mm_load_si128(&gap_extend_vector);//I can see this being useful for readability, may not keep
+    __m128i gap_extend2 = _mm_add_epi16(gap_extend1, gap_extend1);
+    __m128i gap_extend4 = _mm_slli_epi16(gap_extend1, 2);
+    __m128i gap_extend8 = _mm_slli_epi16(gap_extend1, 3);
+
+    //outer loop goes through each column, inner loop goes through each vector in each column
+    for(int j = 1; j < num_cols+1; j++){
+        for(int idx = j; idx<get_band_size(); idx+=num_cols+1){
+            //determine score vector -- need to implement
+            __m128i score_vector;
+
+	    //max of insert_row
+	    __m128i left_insert_row = _mm_alignr_epi8(
+			    vectors[vector_diagonal(idx)].insert_row, 
+			    vectors[vector_below(vector_diagonal(idx))].insert_row, 
+			    2);
+	    __m128i left_match      = _mm_alignr_epi8(
+			    vectors[vector_diagonal(idx)].match,
+			    vectors[vector_below(vector_diagonal(idx))].match,
+			    2);
+	    vectors[idx].insert_row = _mm_max_epi16(_mm_sub_epi16(left_insert_row, gap_extend_vector),
+			                            _mm_sub_epi16(left_match, gap_open_vector));
+	    //max of insert_col -- thanks dozeu
+	    
+	    //max of match -- has to be done last
+	    __m128i diagonal_match = vectors[vector_diagonal(idx)].match;
+	    vectors[idx].match = _mm_max_epi16(
+			    vectors[idx].insert_row, 
+			    _mm_max_epi16(
+				    vectors[idx].insert_col, 
+                                    _mm_adds_epi16(score_vector, diagonal_match)));
+	}
+    }
+
+}
+
+void BandedVectorMatrix::print_full_matrix(){
+    //TODO: print full matrix
+}
+
+void BandedVectorMatrix::print_rectangularized_band(){
+    //TODO: add ability to select which matrix to print
+    const string& read = alignment.sequence();
+    cerr << "Print rectangualrized band of match"<<endl;
+    for(int j = 0; j < num_cols; j++){
+        for(int i = 0; i < num_cols - first_diag - num_diags; i++){
+             alignas(16) short temp[8]; 
+	     _mm_store_si128((__m128i*)temp, vectors[vector_index(i, j)].match);
+	     cerr << temp[index_within_vector(i,j)];
+	}
+	cerr << endl;
+    }
+}
 
 /* Notes on vector initialization:
  *    Here's an example of a banded graph turned vectors(let 1's be the buffer area, 0's be the dp region)
@@ -205,52 +279,66 @@ int BandedVectorMatrix::get_band_size(){
  * also notice that an extra buffer column is inserted before the first column
  * 
  */
-void init_BandedVectorMatrix(BandedVectorHeap* heap, BandedVectorMatrix& matrix, int64_t first_diag,
-                             int64_t num_diags, int64_t num_cols){
+void init_BandedVectorMatrix(BandedVectorMatrix& matrix, BandedVectorHeap* heap, 
+		             Alignment& alignment, handle_t node, int8_t* score_mat, 
+			     int64_t first_diag, int64_t num_diags, int64_t num_cols){
+
     matrix.num_cols = num_cols;
     matrix.first_diag = first_diag;
     matrix.num_diags = num_diags;
+    matrix.alignment = alignment;
+    matrix.node = node;
 
+    //initialize copy of score_mat that is stored in each matrix, find max and determine buffer value
+    int8_t max_num = 0;
+    matrix.score_mat = (int8_t*) heap->alloc(sizeof(int8_t) * 32);//I'm pretty sure score_mat is 32 ints, this may change
+    for(int idx = 0; idx < 32; idx++){
+	max_num = max<int8_t>(max_num, score_mat[idx]);
+        matrix.score_mat[idx] = score_mat[idx];
+    }
+    short matrix_buffer = numeric_limits<int8_t>::max() - max_num;
+    
+    //alloc vectors
     matrix.vectors = (SWVector*) heap->alloc(sizeof(SWVector)*matrix.get_band_size());
-
-    alignas(16) short init_mask[8];
-    _mm_store_si128((__m128i*)init_mask, _mm_setzero_si128());
+    //initialize init_arr to represent corner of matrix
+    alignas(16) short init_arr[8];
+    _mm_store_si128((__m128i*)init_arr, _mm_setzero_si128());
     for(int idx = 0; idx < -first_diag +1 && idx < 8; idx++){
-        init_mask[idx] = 1;
+        init_arr[idx] = matrix_buffer;
     }
 
 # ifdef init_BandedVectorMatrix_debug
     cout << "band_size test: " << matrix.get_band_size() << endl;
-    cout << "init_mask before iterations: ";
+    cout << "init_arr before iterations: ";
     for(int i = 0; i < 8; i++){
-        cout << init_mask[i] << " ";
+        cout << init_arr[i] << " ";
     }
     cout << endl;
 #endif
 
     // initialize top left corner of rectangularized vector matrix
-    for(int idx = 1; idx < -first_diag + 1; idx++){
-        matrix.vectors[idx].match = _mm_load_si128((__m128i*)init_mask);
-        matrix.vectors[idx].insert_row = _mm_load_si128((__m128i*)init_mask);
-        matrix.vectors[idx].insert_col = _mm_load_si128((__m128i*)init_mask);
-        init_mask[-first_diag-idx+1] = 0;
+    for(int idx = 1; idx<-first_diag+1; idx++){
+        matrix.vectors[idx].match = _mm_load_si128((__m128i*)init_arr);
+        matrix.vectors[idx].insert_row = _mm_load_si128((__m128i*)init_arr);
+        matrix.vectors[idx].insert_col = _mm_load_si128((__m128i*)init_arr);
+        init_arr[-first_diag-idx+1] = 0;
 #ifdef init_BandedVectorMatrix_debug
-        cout << "init_mask during iteration " << idx << ": ";
+        cout << "init_arr during iteration " << idx << ": ";
         for(int i = 0; i < 8; i++){
-            cout << init_mask[i] << " ";
+            cout << init_arr[i] << " ";
         }
         cout << endl;
 #endif
     }
 
 #ifdef init_BandedVectorMatrix_debug
-    cout << "Init_mask initialization indices: ";
+    cout << "Init_arr initialization indices: ";
 #endif
     // initialize first row of vectors to init_mask
-    for(int idx = -first_diag+1; idx < matrix.num_cols+1; idx++){
-        matrix.vectors[idx].match = _mm_load_si128((__m128i*)init_mask);
-        matrix.vectors[idx].insert_row = _mm_load_si128((__m128i*)init_mask);
-        matrix.vectors[idx].insert_col = _mm_load_si128((__m128i*)init_mask);
+    for(int idx = -first_diag+1; idx < matrix.num_cols+1 && idx < matrix.get_band_size(); idx++){
+        matrix.vectors[idx].match = _mm_load_si128((__m128i*)init_arr);
+        matrix.vectors[idx].insert_row = _mm_load_si128((__m128i*)init_arr);
+        matrix.vectors[idx].insert_col = _mm_load_si128((__m128i*)init_arr);
 #ifdef init_BandedVectorMatrix_debug
         cout << idx << ", ";
 #endif
@@ -260,7 +348,7 @@ void init_BandedVectorMatrix(BandedVectorHeap* heap, BandedVectorMatrix& matrix,
     cout << endl << "Zero_vector indices: ";
 #endif
     // initialize all vectors as zeroes
-    for(int idx = matrix.num_cols +1; idx < matrix.get_band_size(); idx++){
+    for(int idx = matrix.num_cols+1; idx < matrix.get_band_size(); idx++){
         matrix.vectors[idx].match = _mm_setzero_si128();
         matrix.vectors[idx].insert_row = _mm_setzero_si128();
         matrix.vectors[idx].insert_col = _mm_setzero_si128();
@@ -273,9 +361,9 @@ void init_BandedVectorMatrix(BandedVectorHeap* heap, BandedVectorMatrix& matrix,
 #endif
     // initialize all side vectors as buffer
     for(int idx = 0; idx < matrix.get_band_size(); idx += num_cols+1){
-        matrix.vectors[idx].match = _mm_set1_epi16(1);
-        matrix.vectors[idx].insert_row = _mm_set1_epi16(1);
-        matrix.vectors[idx].insert_col = _mm_set1_epi16(1);
+        matrix.vectors[idx].match = _mm_set1_epi16(matrix_buffer);
+        matrix.vectors[idx].insert_row = _mm_set1_epi16(matrix_buffer);
+        matrix.vectors[idx].insert_col = _mm_set1_epi16(matrix_buffer);
 #ifdef init_BandedVectorMatrix_debug
         cout << idx << ", ";
 #endif
