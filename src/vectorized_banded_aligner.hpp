@@ -24,27 +24,49 @@ using namespace std;
 struct BandedVectorHeap;
 struct BandedVectorMatrix;
 
+/* 
+ * instance of aligner, name pending
+ */
+struct AlignerInstance {
+    BandedVectorMatrix* matrices;
+    int num_nodes;
+    HandleGraph* graph;
+    Alignment* alignment;
+    handle_t* topological_order;
+    int8_t gap_open;
+    int8_t gap_extend;
+};
+
 /*
  * Core aligner object for vectorized banded global alignment
  */
 struct BandedVectorAligner {
     
     // constructor
-    static BandedVectorAligner* init(Alignment& alignment, HandleGraph& g, int64_t band_padding, 
-		                     bool permissive_banding = true, bool adjust_for_base_quality = false);
+    static BandedVectorAligner* init(int8_t* score_mat, int8_t* nt_table, bool permissive_banding = true, bool adjust_for_base_quality = false);
     // destructor
     void destroy();
-    // align function: currently aligns the single matrix in the aligner, will eventually work on an array of them
-    void align(int8_t* score_mat, int8_t* nt_table, int8_t gap_open, int8_t gap_extend);
+    // builds AlignerInstance within BandedVectorAligner
+    void create_instance(AlignerInstance& instance, HandleGraph* graph, Alignment* alignment, vector<handle_t>& topological_order, int8_t gap_open, int8_t gap_extend);
     
+    //functions to manipulate BandedVectorAligner
+    void change_scoring(int8_t* score_mat);
+
+    void change nt_table(int8_t* nt_table);// I can see this not being useful, but I'll include it either way
+
+    void change_permissive_banding(bool permissive_banding);
+    
+    void change_adjust_for_base_quality(bool adjust_for_base_quality);//is this name too long?
+
+    // TODO: add get() functions as needed
+
     // TODO: design more interface
     
 private:
-    BandedVectorMatrix* banded_matrices;//I noticed banded_global_aligner has a vector of matrices, so I decided to use a pointer
-    int number_of_nodes;
-    handle_t* topological_order;
-    HandleGraph& graph;
-    Alignment& alignment;
+    int8_t* score_mat;
+    int8_t* nt_table;
+    bool permissive_banding;
+    bool adjust_for_base_quality;
     BandedVectorHeap* heap;
     
     
@@ -167,8 +189,9 @@ struct BandedVectorMatrix {
     // returns number of vectors in band
     int get_band_size();
     //fill matrix function. this is where the dynamic programming is
-    void fill_matrix(HandleGraph& graph, int8_t* score_mat, int8_t* nt_table, 
+    void fill_matrix(HandleGraph* graph, int8_t* score_mat, int8_t* nt_table, 
 		     int8_t gap_open, int8_t gap_extend, bool qual_adjusted);
+    
     //debugging: prints full matrix
     void print_full_matrix();
     //debugging: prints matrix as rectangularized band
@@ -179,12 +202,12 @@ struct BandedVectorMatrix {
     int64_t first_diag;
     int64_t num_diags;
     int64_t num_cols;
-    Alignment& alignment;
+    Alignment* alignment;
     handle_t node;
     int8_t* score_mat;
 };
 
-void init_BandedVectorMatrix(BandedVectorMatrix& matrix, BandedVectorHeap* heap, Alignment& alignment, handle_t node, 
+void init_BandedVectorMatrix(BandedVectorMatrix& matrix, BandedVectorHeap* heap, Alignment* alignment, handle_t node, 
 		             int8_t* score_mat, int64_t first_diag, int64_t num_diags, int64_t num_cols);
 
 }
