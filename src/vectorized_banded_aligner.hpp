@@ -44,7 +44,7 @@ struct AlignerInstance {
 struct BandedVectorAligner {
     
     // constructor
-    static BandedVectorAligner* init(int8_t* score_mat, int8_t* nt_table, bool adjust_for_base_quality = false, vector<handle_t>& topological_order, int16_t gap_open, int16_t gap_extend);
+    static BandedVectorAligner* init(int8_t* score_mat, int8_t* nt_table, int16_t gap_open, int16_t gap_extend, bool adjust_for_base_quality = false);
     // destructor
     void destroy();
     // builds AlignerInstance within BandedVectorAligner
@@ -191,20 +191,20 @@ struct BandedVectorMatrix {
     // returns number of vectors in band
     int get_band_size();
     //fill matrix function. this is where the dynamic programming is
-    void fill_matrix(BandedVectorHeap* heap, AlignerInstance* instance, bool qual_adjusted);
+    void fill_matrix(BandedVectorHeap* heap, int8_t* score_mat, int8_t* nt_table, bool qual_adjusted);
     
     // returns scores used in dynamic programming
-    void query_forward(int8_t* query, int8_t* score_mat, char node_char, int col_num);
+    void query_forward(int8_t* query, int8_t* score_mat, int8_t* nt_table, char node_char, int col_num);
     
     // updates vector at idx using query
-    int update_vector(__m128i& left_insert_col, __m128i* left_match, int8_t* query, int query_idx, int idx);
+    int update_vector(__m128i& left_insert_col, __m128i& left_match, int8_t* query, int query_idx, int idx);
 
     // function used to only update first column
     void update_first_column(int8_t* query);
     
     // returns vectors starting at row y  
     __m128i get_vector_match(BandedVectorMatrix* seed, int y);
-    __m128i get_vector_insert_row(BandedVectorMatrix* seed, int y);
+    __m128i get_vector_insert_col(BandedVectorMatrix* seed, int y);
     
     //debugging: prints full matrix
     void print_full_matrix();
@@ -220,6 +220,7 @@ struct BandedVectorMatrix {
     string node_seq;
     int8_t* query;
     int8_t* score_mat;
+    int8_t* nt_table;
     int16_t gap_open;
     int16_t gap_extend;
 
@@ -228,7 +229,8 @@ struct BandedVectorMatrix {
     bool is_source;
 };
 
-void init_BandedVectorMatrix(BandedVectorMatrix& matrix, BandedVectorHeap* heap, AlignerInstance* instance, handle_t node, int64_t first_diag, int64_t num_diags, int64_t num_cols);
+void init_BandedVectorMatrix(BandedVectorMatrix& matrix, BandedVectorHeap* heap, AlignerInstance* instance, int8_t* score_mat, int8_t* nt_table,
+        handle_t node, int64_t first_diag, int64_t num_diags, int64_t num_cols);
 
 }
 

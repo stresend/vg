@@ -19,7 +19,7 @@ namespace vg {
 const size_t BandedVectorHeap::init_block_size = (1 << 20); // 1 MB
 
 
-BandedVectorAligner* BandedVectorAligner::init(int8_t* score_mat, int8_t* nt_table, bool adjust_for_base_quality, int16_t gap_open, int16_t gap_extend) {
+BandedVectorAligner* BandedVectorAligner::init(int8_t* score_mat, int8_t* nt_table, int16_t gap_open, int16_t gap_extend, bool adjust_for_base_quality) {
     //create heap, save in aligner
     BandedVectorHeap* heap = BandedVectorHeap::init();
     BandedVectorAligner* aligner = (BandedVectorAligner*) heap->irreversible_alloc(sizeof(BandedVectorAligner));
@@ -39,7 +39,7 @@ BandedVectorAligner* BandedVectorAligner::init(int8_t* score_mat, int8_t* nt_tab
 }
 
 void BandedVectorAligner::new_instance(AlignerInstance* instance, HandleGraph* graph, Alignment* alignment, 
-		                vector<handle_t>& topological_order, int8_t gap_open, int8_t gap_extend){
+		                vector<handle_t>& topological_order, int16_t gap_open, int16_t gap_extend){
 
     // reset heap before creating new instance
     heap->reset();
@@ -51,14 +51,14 @@ void BandedVectorAligner::new_instance(AlignerInstance* instance, HandleGraph* g
     instance->gap_open = gap_open;
     instance->gap_extend = gap_extend;
 
-    for(int i = 0, i < topological_order.size(), i++){
-        node_id_to_idx[graph.get_id(topological_order[i])] = i;
+    for(int i = 0; i < topological_order.size(); i++){
+        instance->node_id_to_idx[graph->get_id(topological_order[i])] = i;
     }
 }
 
 void BandedVectorAligner::align_instance(){
     for(int i = 0; i < current_instance->num_nodes; i++){
-        current_instance->matrices[i]->fill_matrix(heap, current_instance, qual_adjusted);
+        current_instance->matrices[i].fill_matrix(heap, score_mat, nt_table, adjust_for_base_quality);
     }
 }
 
@@ -203,7 +203,7 @@ int BandedVectorMatrix::index_within_vector(int i, int j){
 
 pair<int, int> BandedVectorMatrix::coordinate(int vec_idx, int idx_within_vec){
     int matrix_j = vec_idx%num_cols;
-    int matrix_i =  idx_within_vec+first_diag-1+matrix_j+8*(vec_idx/num_cols);
+    int matrix_i = idx_within_vec+first_diag-1+matrix_j+8*(vec_idx/num_cols);
     return pair<int, int>(matrix_i, matrix_j);
 }
 
@@ -225,26 +225,31 @@ int BandedVectorMatrix::get_band_size(){
 }
 
 //dynamic programming section
-void BandedVectorMatrix::fill_matrix(BandedVectorHeap* heap, AlignerInstance* instance, bool qual_adjusted){
+void BandedVectorMatrix::fill_matrix(BandedVectorHeap* heap, int8_t* score_mat, int8_t* nt_table, bool qual_adjusted){
     
     int query_size = num_diags + 1 + (16*num_diags)-(num_diags+1)%16;// replace with round up function for readability
     int8_t* query = (int8_t*) heap->alloc(sizeof(int8_t)*query_size);
-    query_forward(query, score_mat, node_seq[0], 0)
+    query_forward(query, score_mat, nt_table, node_seq[0], 0);
     update_first_column(query);
     //outer loop goes through each column, inner loop goes through each vector in each column
     for(int j = 2; j < num_cols+1; j++){
         //determine score vector
-        query_forward(query, score_mat, node_seq[j-1], j-1);    
+        query_forward(query, score_mat, nt_table, node_seq[j-1], j-1);    
         int query_idx = 0;
         for(int idx = j, band_size = get_band_size(), step = num_cols+1; idx<band_size; idx+=step){
-			query_idx = update_vector(query, query_idx, idx);
+            __m128i left_insert_col = _mm_alignr_epi8(
+			        vectors[vector_diagonal(idx)].insert_col, 
+			        vectors[vector_below(vector_diagonal(idx))].insert_col, 
+			        14);
+	        __m128i left_match      = vectors[vector_diagonal(idx)].match;
+			query_idx = update_vector(left_insert_col, left_match, query, query_idx, idx);
         }
     }
 
 }
 
 //fills out query. Needs to be vectorized!!
-void BandedVectorMatrix::query_forward(int8_t* query, int8_t* score_mat, char node_char, int col_num){
+void BandedVectorMatrix::query_forward(int8_t* query, int8_t* score_mat, int8_t* nt_table, char node_char, int col_num){
     int query_size = num_diags + 1 + (16*num_diags)-(num_diags+1)%16;     
     const string& read = alignment->sequence();
     
@@ -282,7 +287,7 @@ int BandedVectorMatrix::update_vector(__m128i& left_insert_col, __m128i& left_ma
 	__m128i max_insert_col = _mm_max_epi16(
 		   _mm_subs_epi16(
 			   left_insert_col, 
-			   gap_extend_vector),
+			   gap_extend1),
 									
 		   _mm_subs_epi16(
 			   left_match, 
@@ -291,7 +296,7 @@ int BandedVectorMatrix::update_vector(__m128i& left_insert_col, __m128i& left_ma
 		   );
 
 	__m128i max_match = _mm_max_epi16(
-			max_insert_row, 
+			max_insert_col, 
 			_mm_adds_epi16(
 				score_vector, 
 				_mm_alignr_epi8(
@@ -353,35 +358,32 @@ int BandedVectorMatrix::update_vector(__m128i& left_insert_col, __m128i& left_ma
 
 void BandedVectorMatrix::update_first_column(int8_t* query){
     if(is_source){
-        query_forward(query, score_mat, node_seq[0], 1);
+        query_forward(query, score_mat, nt_table, node_seq[0], 1);
         for(int i = 0; i < number_of_seeds; i++){
             int query_idx = 0;
             for(int idx = 1, band_size = get_band_size(), step = num_cols+1; idx<band_size; idx+=step){
                 __m128i left_insert_col = _mm_alignr_epi8(
-                        seeds[i]->get_vector_insert_col(idx - 1), 
-			            seeds[i]->get_vector_insert_col(idx + 7),// 8 rows below previous vectors
+                        seeds[i]->get_vector_insert_col(seeds[i],idx - 1), 
+			            seeds[i]->get_vector_insert_col(seeds[i],idx + 7),// 8 rows below previous vectors
 			            14);
 	            __m128i left_match      = _mm_alignr_epi8(
-			            seeds[i]->get_vector_match(idx-1),
-			            seeds[i]->get_vector_match(idx+7),
+			            seeds[i]->get_vector_match(seeds[i], idx-1),
+			            seeds[i]->get_vector_match(seeds[i], idx+7),
 			            14);
-		    	query_idx = update_vector_first_column(left_insert_col, left_match, query, query_idx);
+		    	query_idx = update_vector(left_insert_col, left_match, query, query_idx, idx);
             }
         }   
     }else{        
-        query_forward(query, score_mat, node_seq[0], 1);	    
+        query_forward(query, score_mat, nt_table, node_seq[0], 1);	    
         int query_idx = 0;
 	    
         for(int idx = 1, band_size = get_band_size(), step = num_cols+1; idx<band_size; idx+=step){
-            __m128i left_insert_row = _mm_alignr_epi8(
-			        vectors[vector_diagonal(idx)].insert_row, 
-			        vectors[vector_below(vector_diagonal(idx))].insert_row, 
+            __m128i left_insert_col = _mm_alignr_epi8(
+			        vectors[vector_diagonal(idx)].insert_col, 
+			        vectors[vector_below(vector_diagonal(idx))].insert_col, 
 			        14);
-	        __m128i left_match      = _mm_alignr_epi8(
-			        vectors[vector_diagonal(idx)].match,
-			        vectors[vector_below(vector_diagonal(idx))].match,
-			        14);
-			query_idx = update_vector(left_insert_row, left_match, query, query_idx, idx);
+	        __m128i left_match      = vectors[vector_diagonal(idx)].match;
+			query_idx = update_vector(left_insert_col, left_match, query, query_idx, idx);
         }
     }        
 }
@@ -392,22 +394,22 @@ __m128i BandedVectorMatrix::get_vector_match(BandedVectorMatrix* seed, int y){
     int vec_idx = 0;
     while(!seed->is_inside_band(seed->num_cols - 1, y) && vec_idx < 8){
         //I would normally have limit<short>::min()-highest_score as buffer, without recalculating highest_score, this is fastest
-        vector_arr[vec_idx++] = numeric_limits<short>::min()-numeric_limits<int8_t>::max();
+        vector_arr[vec_idx++] = numeric_limits<short>::min()+numeric_limits<int8_t>::max();
         y++;
     }
     
-    while(seed->inside_band(seed->num_cols-1, y)&& vec_idx < 8){
+    while(seed->is_inside_band(seed->num_cols-1, y)&& vec_idx < 8){
         alignas(16) short temp_arr[8];
-        _mm_store_si128((__m128i*)temp_arr, seed->vectors[seed->vector_index(i,j)].match);
-        vector_arr[vec_idx++] = temp_arr[seed->idx_within_vec(seed->num_cols-1, y++)];
+        _mm_store_si128((__m128i*)temp_arr, seed->vectors[seed->vector_index(y, seed->num_cols-1)].match);
+        vector_arr[vec_idx++] = temp_arr[seed->index_within_vector(seed->num_cols-1, y++)];
     }
     while(!seed->is_inside_band(seed->num_cols - 1, y)&& vec_idx < 8){
         //I would normally have limit<short>::min()-highest_score as buffer, without recalculating highest_score, this is fastest
-        vector_arr[vec_idx++] = numeric_limits<short>::min()-numeric_limits<int8_t>::max();
+        vector_arr[vec_idx++] = numeric_limits<short>::min()+numeric_limits<int8_t>::max();
         y++;
     }
 
-    return _mm_load_si128((__m128i*)temp_arr);
+    return _mm_load_si128((__m128i*)vector_arr);
 }
 
 __m128i BandedVectorMatrix::get_vector_insert_col(BandedVectorMatrix* seed, int y){
@@ -415,22 +417,22 @@ __m128i BandedVectorMatrix::get_vector_insert_col(BandedVectorMatrix* seed, int 
     int vec_idx = 0;
     while(!seed->is_inside_band(seed->num_cols - 1, y) && vec_idx < 8){
         //I would normally have limit<short>::min()-highest_score as buffer, without recalculating highest_score, this is fastest
-        vector_arr[vec_idx++] = numeric_limits<short>::min()-numeric_limits<int8_t>::max();
+        vector_arr[vec_idx++] = numeric_limits<short>::min()+numeric_limits<int8_t>::max();
         y++;
     }
     
-    while(seed->inside_band(seed->num_cols-1, y)&& vec_idx < 8){
+    while(seed->is_inside_band(seed->num_cols-1, y)&& vec_idx < 8){
         alignas(16) short temp_arr[8];
-        _mm_store_si128((__m128i*)temp_arr, seed->vectors[seed->vector_index(i,j)].insert_col);
-        vector_arr[vec_idx++] = temp_arr[seed->idx_within_vec(seed->num_cols-1, y++)];
+        _mm_store_si128((__m128i*)temp_arr, seed->vectors[seed->vector_index(y,seed->num_cols-1)].insert_col);
+        vector_arr[vec_idx++] = temp_arr[seed->index_within_vector(seed->num_cols-1, y++)];
     }
     while(!seed->is_inside_band(seed->num_cols - 1, y)&& vec_idx < 8){
         //I would normally have limit<short>::min()-highest_score as buffer, without recalculating highest_score, this is fastest
-        vector_arr[vec_idx++] = numeric_limits<short>::min()-numeric_limits<int8_t>::max();
+        vector_arr[vec_idx++] = numeric_limits<short>::min()+numeric_limits<int8_t>::max();
         y++;
     }
 
-    return _mm_load_si128((__m128i*)temp_arr);
+    return _mm_load_si128((__m128i*)vector_arr);
 }
 
 void BandedVectorMatrix::print_full_matrix(){
@@ -468,8 +470,8 @@ void BandedVectorMatrix::print_rectangularized_band(){
  * also notice that an extra buffer column is inserted before the first column
  * 
  */
-void init_BandedVectorMatrix(BandedVectorMatrix& matrix, BandedVectorHeap* heap, 
-        AlignerInstance* instance, handle_t node, int64_t first_diag, int64_t num_diags,
+void init_BandedVectorMatrix(BandedVectorMatrix& matrix, BandedVectorHeap* heap, AlignerInstance* instance,  
+        int8_t* score_mat, int8_t* nt_table, handle_t node, int64_t first_diag, int64_t num_diags,
         int64_t num_cols){
 
     matrix.num_cols = num_cols;
@@ -477,10 +479,11 @@ void init_BandedVectorMatrix(BandedVectorMatrix& matrix, BandedVectorHeap* heap,
     matrix.num_diags = num_diags;
     matrix.alignment = instance->alignment;
     matrix.node = node;
-    matrix.node_seq = instance->graph.get_sequence(node);
-    matrix.score_mat = instance->score_mat;
+    matrix.node_seq = instance->graph->get_sequence(node);
+    matrix.score_mat = score_mat;
+    matrix.nt_table = nt_table;
     matrix.gap_extend = instance->gap_extend;
-    matric.gap_open = instance->gap_open;
+    matrix.gap_open = instance->gap_open;
 
     short matrix_buffer = numeric_limits<short>::min() + numeric_limits<int8_t>::max();
     
@@ -496,14 +499,14 @@ void init_BandedVectorMatrix(BandedVectorMatrix& matrix, BandedVectorHeap* heap,
 
     //fill out seeds, I run follow_edges twice to count and then alloc
     int num_seeds = 0;
-    instance->graph.follow_edges(node, true, [&](const handle_t& prev) {
+    instance->graph->follow_edges(node, true, [&](const handle_t& prev) {
                 num_seeds++;
             });
-    matrix.seeds = heap->alloc(sizeof(BandedVectorMatrix*)*num_seeds);
+    matrix.seeds = (BandedVectorMatrix**)heap->alloc(sizeof(BandedVectorMatrix*)*num_seeds);
     matrix.number_of_seeds = num_seeds;
     num_seeds = 0;
-    instance->graph.follow_edges(node, true, [&](const handle_t& prev) {
-                seeds[num_seeds] = &(intance->matrices[node_id_to_idx[graph.get_id(prev)]]);
+    instance->graph->follow_edges(node, true, [&](const handle_t& prev) {
+                matrix.seeds[num_seeds] = &(instance->matrices[instance->node_id_to_idx[instance->graph->get_id(prev)]]);
                 num_seeds++;
             });
      
