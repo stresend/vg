@@ -33,8 +33,9 @@ struct AlignerInstance {
     HandleGraph* graph;
     Alignment* alignment;
     handle_t* topological_order;
-    int8_t gap_open;
-    int8_t gap_extend;
+    int16_t gap_open;
+    int16_t gap_extend;
+    unordered_map<int, int> node_id_to_idx;
 };
 
 /*
@@ -43,12 +44,15 @@ struct AlignerInstance {
 struct BandedVectorAligner {
     
     // constructor
-    static BandedVectorAligner* init(int8_t* score_mat, int8_t* nt_table, bool adjust_for_base_quality = false);
+    static BandedVectorAligner* init(int8_t* score_mat, int8_t* nt_table, bool adjust_for_base_quality = false, vector<handle_t>& topological_order, int16_t gap_open, int16_t gap_extend);
     // destructor
     void destroy();
     // builds AlignerInstance within BandedVectorAligner
-    void new_instance(AlignerInstance* instance, HandleGraph* graph, Alignment* alignment, vector<handle_t>& topological_order, int8_t gap_open, int8_t gap_extend);
+    void new_instance(AlignerInstance* instance, HandleGraph* graph, Alignment* alignment, vector<handle_t>& topological_order, int16_t gap_open, int16_t gap_extend);
     
+    //aligns instance currently stored in aligner
+    void align_instance();
+
     //functions to manipulate BandedVectorAligner
     void change_scoring(int8_t* score_mat);
 
@@ -66,7 +70,7 @@ private:
     int8_t* nt_table;
     bool adjust_for_base_quality;
     BandedVectorHeap* heap;
-    
+    AlignerInstance* current_instance;
     
 public:
     // delete all constructors, assignents operators, and the destructor
@@ -187,18 +191,16 @@ struct BandedVectorMatrix {
     // returns number of vectors in band
     int get_band_size();
     //fill matrix function. this is where the dynamic programming is
-    void fill_matrix(BandedVectorHeap* heap, int8_t* score_mat, int8_t* nt_table, string node_seq, 
-		     int8_t gap_open, int8_t gap_extend, bool qual_adjusted);
+    void fill_matrix(BandedVectorHeap* heap, AlignerInstance* instance, bool qual_adjusted);
     
     // returns scores used in dynamic programming
     void query_forward(int8_t* query, int8_t* score_mat, char node_char, int col_num);
     
     // updates vector at idx using query
-    int update_vector(int8_t* query, int query_idx, int idx);
+    int update_vector(__m128i& left_insert_col, __m128i* left_match, int8_t* query, int query_idx, int idx);
 
-    void update_vector_first_column(BandedVectorMatrix* seed, int8_t* query, int query_idx, int idx, int x);
     // function used to only update first column
-    void update_first_column(int8_t* query, int8_t* score_mat, string node_seq);
+    void update_first_column(int8_t* query);
     
     // returns vectors starting at row y  
     __m128i get_vector_match(BandedVectorMatrix* seed, int y);
@@ -218,14 +220,15 @@ struct BandedVectorMatrix {
     string node_seq;
     int8_t* query;
     int8_t* score_mat;
+    int16_t gap_open;
+    int16_t gap_extend;
 
     BandedVectorMatrix** seeds;
     int number_of_seeds;
     bool is_source;
 };
 
-void init_BandedVectorMatrix(BandedVectorMatrix& matrix, BandedVectorHeap* heap, Alignment* alignment, handle_t node, string node_seq, 
-		             int8_t* score_mat, int64_t first_diag, int64_t num_diags, int64_t num_cols);
+void init_BandedVectorMatrix(BandedVectorMatrix& matrix, BandedVectorHeap* heap, AlignerInstance* instance, handle_t node, int64_t first_diag, int64_t num_diags, int64_t num_cols);
 
 }
 
