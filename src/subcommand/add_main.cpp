@@ -15,7 +15,6 @@
 
 #include "../vg.hpp"
 #include "../variant_adder.hpp"
-#include "../algorithms/copy_graph.hpp"
 
 #include <vg/io/vpkg.hpp>
 
@@ -165,11 +164,10 @@ int main_add(int argc, char** argv) {
     }
     
     // Load the graph
-    
+
     unique_ptr<handlegraph::MutablePathDeletableHandleGraph> graph;
-    get_input_file(optind, argc, argv, [&](istream& in) {
-        graph = vg::io::VPKG::load_one<handlegraph::MutablePathDeletableHandleGraph>(in);
-    });
+    string graph_filename = get_input_file_name(optind, argc, argv);
+    graph = vg::io::VPKG::load_one<handlegraph::MutablePathDeletableHandleGraph>(graph_filename);
     
     VG* vg_graph = dynamic_cast<vg::VG*>(graph.get());
     
@@ -178,7 +176,7 @@ int main_add(int argc, char** argv) {
         if (vg_graph == nullptr) {
             // Copy instead.
             vg_graph = new vg::VG();
-            algorithms::copy_path_handle_graph(graph.get(), vg_graph);
+            handlealgs::copy_path_handle_graph(graph.get(), vg_graph);
             // Give the unique_ptr ownership and delete the graph we loaded.
             graph.reset(vg_graph);
             // Make sure the paths are all synced up
@@ -247,5 +245,5 @@ int main_add(int argc, char** argv) {
 }
 
 // Register subcommand
-static Subcommand vg_add("add", "add variants from a VCF to a graph", main_add);
+static Subcommand vg_add("add", "add variants from a VCF to a graph", DEPRECATED, main_add);
 

@@ -3,15 +3,12 @@
 ///
 ///
 
-//#define debug
+// #define debug
 
 #include <vg/io/protobuf_emitter.hpp>
 
 #include "snarls.hpp"
 #include "vg/io/json2pb.h"
-#include "algorithms/find_tips.hpp"
-#include "algorithms/is_acyclic.hpp"
-#include "algorithms/weakly_connected_components.hpp"
 #include "subgraph_overlay.hpp"
 
 namespace vg {
@@ -210,7 +207,7 @@ SnarlManager HandleGraphSnarlFinder::find_snarls_unindexed() {
         NetGraph flat_net_graph(snarl.start(), snarl.end(), managed_child_chains, graph);
         
         // Having internal tips in the net graph disqualifies a snarl from being an ultrabubble
-        auto tips = algorithms::find_tips(&flat_net_graph);
+        auto tips = handlealgs::find_tips(&flat_net_graph);
 
 #ifdef debug
         cerr << "Tips: " << endl;
@@ -228,7 +225,7 @@ SnarlManager HandleGraphSnarlFinder::find_snarls_unindexed() {
         /////
     
         // This definitely should be calculated based on the internal-connectivity-ignoring net graph.
-        snarl.set_directed_acyclic_net_graph(algorithms::is_directed_acyclic(&flat_net_graph));
+        snarl.set_directed_acyclic_net_graph(handlealgs::is_directed_acyclic(&flat_net_graph));
 
         /////
         // Determine classification
@@ -781,6 +778,13 @@ const Snarl* SnarlManager::discrete_uniform_sample(minstd_rand0& random_engine)c
     // have to set the seed to the random engine in the unit tests , pass the random engine 
 
     int number_of_snarls = num_snarls();
+#ifdef debug
+    cerr << "number_of_snarls "<< number_of_snarls <<endl;
+    for (int i =0; i< snarls.size(); i++){
+        const Snarl* snarl  = unrecord(&snarls[i]);
+        cerr << snarl->start().node_id() << " -> "<<snarl->end().node_id() <<endl;
+    }
+#endif
 
     // if we have no snarls we return a flag 
     if(number_of_snarls ==0){
@@ -788,15 +792,21 @@ const Snarl* SnarlManager::discrete_uniform_sample(minstd_rand0& random_engine)c
     }
     
     // we choose a snarl from the master list of snarls in the graph at random uniformly
-    // unif[a,b]
+    // unif[a,b],  deque starts at index 0 so upperbound is size-1
     uniform_int_distribution<int> distribution(0, number_of_snarls-1);  
     int random_num = distribution(random_engine);
 #ifdef debug
-    cerr << "modifying snarl num " << random_num << endl ;  
+    cerr << "modifying snarl num " << random_num << endl;  
+    if(unrecord(&snarls[random_num]) == nullptr){
+        cerr << "unrecorded snarl is null" <<endl;
+    }else{
+       const Snarl* snarl  = unrecord(&snarls[random_num]);
+       cerr << snarl->start() << endl;
+       cerr << snarl->end() <<endl;
+    }
 #endif
-    const Snarl* random_snarl = unrecord(&snarls[random_num]);
 
-    return random_snarl;
+    return unrecord(&snarls[random_num]);
 
 } 
 
@@ -871,6 +881,9 @@ const Snarl* SnarlManager::add_snarl(const Snarl& new_snarl) {
     
     // Hackily copy the snarl in
     *new_record = new_snarl;
+
+    // Initialized snarl number for each record as deque is being filled
+    new_record->snarl_number = (size_t)snarls.size()-1;
     
     // TODO: Should this be a non-default SnarlRecord constructor?
 

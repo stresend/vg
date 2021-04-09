@@ -14,7 +14,6 @@
 
 #include "../vg.hpp"
 #include "../vg_set.hpp"
-#include "../algorithms/topological_sort.hpp"
 #include <vg/io/stream.hpp>
 #include <vg/io/vpkg.hpp>
 #include <handlegraph/mutable_path_mutable_handle_graph.hpp>
@@ -118,10 +117,8 @@ int main_ids(int argc, char** argv) {
 
     if (!join && mapping_name.empty()) {
         unique_ptr<MutablePathMutableHandleGraph> graph;
-        get_input_file(optind, argc, argv, [&](istream& in) {
-                graph = vg::io::VPKG::load_one<MutablePathMutableHandleGraph>(in);
-            });
-            
+        string graph_filename = get_input_file_name(optind, argc, argv);
+        graph = vg::io::VPKG::load_one<MutablePathMutableHandleGraph>(graph_filename);            
             
         if (sort || compact) {
             // We need to reassign IDs
@@ -149,7 +146,7 @@ int main_ids(int argc, char** argv) {
                 // We are sorting to assign IDs, which inherently compacts.
                 
                 // We only need to sort the ID numbers, not the graph's iteration order (if any).
-                auto handle_order = algorithms::topological_order(graph.get());
+                auto handle_order = handlealgs::topological_order(graph.get());
                 
                 // Now invert the order's mapping
                 new_ids.reserve(handle_order.size());

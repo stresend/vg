@@ -5,7 +5,7 @@ BASH_TAP_ROOT=../deps/bash-tap
 
 PATH=../bin:$PATH # for vg
 
-plan tests 26
+plan tests 57
 
 vg construct -r complex/c.fa -v complex/c.vcf.gz > c.vg
 cat <(vg view c.vg | grep ^S | sort) <(vg view c.vg | grep L | uniq | wc -l) <(vg paths -v c.vg -E) > c.info
@@ -34,6 +34,14 @@ is "$?" 0 "vg convert maintains same nodes throughout packed-graph conversion"
 
 rm -f c.pg c1.vg c1.info
 
+vg convert c.vg -f > c.gfa
+vg convert -g c.gfa -v > c1.vg
+cat <(vg view c1.vg | grep ^S | sort) <(vg view c1.vg | grep L | uniq | wc -l) <(vg paths -v c1.vg -E) > c1.info
+diff c.info c1.info
+is "$?" 0 "vg convert maintains same nodes throughout gfa conversion"
+
+rm -f c.gfa c1.vg c1.info
+
 vg convert c.vg -o > c.odgi
 vg convert c.odgi -v > c1.vg
 cat <(vg view c1.vg | grep ^S | sort) <(vg view c1.vg | grep L | uniq | wc -l) <(vg paths -v c1.vg -E) > c1.info
@@ -50,11 +58,13 @@ is "$(vg convert -a x.vg | vg view - | wc -l)" "$(wc -l < x.gfa)" "hash graph co
 is "$(vg convert -p x.vg | vg view - | wc -l)" "$(wc -l < x.gfa)" "packed graph conversion looks good"
 is "$(vg convert -v x.vg | vg view - | wc -l)" "$(wc -l < x.gfa)" "vg conversion looks good"
 is "$(vg convert -o x.vg | vg view - | wc -l)" "$(wc -l < x.gfa)" "odgi conversion looks good"
+is "$(vg convert -f x.vg | vg convert -g - | vg view - | wc -l)" "$(wc -l < x.gfa)" "gfa conversion looks good"
 is "$(vg convert -x x.vg | vg find -n 1 -c 300 -x - | vg view - | wc -l)" "$(wc -l < x.gfa)" "xg conversion looks good"
 
 is "$(vg convert -g -a x.gfa | vg view - | wc -l)" "$(wc -l < x.gfa)" "on disk gfa conversion looks good"
 is "$(cat x.gfa | vg convert -g -a - | vg view - | wc -l)" "$(wc -l < x.gfa)" "streaming gfa conversion looks good"
 is "$(vg convert -g -x x.gfa | vg find -n 1 -c 300 -x - | vg view - | wc -l)" "$(wc -l < x.gfa)" "gfa to xg conversion looks good"
+is "$(vg convert -g -f x.gfa | vg convert -g - | vg find -n 1 -c 300 -x - | vg view - | wc -l)" "$(wc -l < x.gfa)" "gfa to gfa conversion looks good"
 
 rm x.vg x.gfa
 rm -f c.vg c.pg c1.vg c.info c1.info
@@ -166,3 +176,138 @@ diff floating-ins.gaf floating-ins2.gaf
 is "$?" 0 "convert gam->gaf->gam->gaf makes same gaf each time of floating insertion alignment" 
 
 rm -f floating-ins.pg floating-ins.gam floating-ins.gaf gam.sequence gam2.sequence floating-ins2.gaf
+
+vg convert -g tiny/tiny.gfa | vg view - | sort > tiny.gfa.gfa
+vg convert -g tiny/tiny.rgfa | vg view - | sort > tiny.rgfa.gfa
+diff tiny.gfa.gfa tiny.rgfa.gfa
+is "$?" 0 "converting gfa and equivalent rgfa produces same output"
+
+rm -f tiny.gfa.gfa tiny.rgfa.gfa
+
+is "$(vg convert -g tiny/tiny.rgfa -r 1 | vg view - | grep y | awk '{print $1","$2","$3}')" "P,y[35],2+" "rank-1 rgfa subpath found"
+
+vg convert -g tiny/tiny.rgfa -T gfa-id-mapping.tsv > /dev/null
+grep ^S tiny/tiny.rgfa  | awk '{print $2}' | sort > rgfa_nodes
+grep ^S tiny/tiny.gfa  | awk '{print $2}' | sort > gfa_nodes
+awk '{print $2}' gfa-id-mapping.tsv | sort > rgfa_translated_nodes
+awk '{print $3}' gfa-id-mapping.tsv | sort > gfa_translated_nodes
+diff rgfa_nodes rgfa_translated_nodes
+is "$?" 0 "2nd column of gfa id translation file contains all rgfa nodes"
+diff gfa_nodes gfa_translated_nodes
+is "$?" 0 "3rd column of gfa id translation file contains all gfa nodes"
+
+rm -f  gfa-id-mapping.tsv rgfa_nodes gfa_nodes rgfa_translated_nodes gfa_translated_nodes
+
+vg convert -g tiny/tiny.gfa -v | vg convert - -f -P x > tiny.gfa.rgfa
+is "$(grep ^P tiny.gfa.rgfa | wc -l)" 0 "rgfa output wrote no P-lines"
+vg convert -g tiny/tiny.gfa -v | vg convert - -f | sort > tiny.gfa.gfa
+vg convert -g tiny.gfa.rgfa -f | sort > tiny.gfa.rgfa.gfa
+diff tiny.gfa.gfa tiny.gfa.rgfa.gfa
+is "$?" 0 "rgfa export roundtrips back to normal P-lines"
+
+rm -f tiny.gfa.rgfa tiny.gfa.gfa tiny.gfa.rgfa.gfa
+
+
+# GFA to GBWTGraph to HashGraph to GFA
+vg gbwt -o components.gbwt -g components.gg -G graphs/components_walks.gfa
+vg convert -b components.gbwt -a components.gg > components.hg 2> /dev/null
+is $? 0 "GBWTGraph to HashGraph conversion"
+grep "^S" graphs/components_walks.gfa | sort > sorted.gfa
+vg view components.hg | grep "^S" | sort > converted.gfa
+cmp sorted.gfa converted.gfa
+is $? 0 "GFA -> GBWTGraph -> HashGraph -> GFA conversion maintains segments"
+
+# GBWTGraph to GFA with walks
+vg convert -b components.gbwt -f components.gg > extracted.gfa
+is $? 0 "GBWTGraph to GFA conversion with walks"
+cmp extracted.gfa graphs/components_walks.gfa
+is $? 0 "GBWTGraph to GFA conversion creates the correct normalized GFA file"
+
+rm -f components.gbwt components.gg
+rm -f components.hg
+rm -f sorted.gfa converted.gfa
+rm -f extracted.gfa
+
+
+# GFA to GBWTGraph with paths and walks
+vg gbwt -o components.gbwt -g components.gg -G graphs/components_paths_walks.gfa
+vg convert -g -a graphs/components_paths_walks.gfa > direct.hg
+vg paths -v direct.hg -A > correct_paths.gaf
+
+# GBWTGraph to HashGraph with paths and walks
+vg convert -b components.gbwt -a components.gg > components.hg
+is $? 0 "GBWTGraph to HashGraph conversion with reference paths"
+vg paths -A -v components.hg > hg_paths.gaf
+cmp hg_paths.gaf correct_paths.gaf
+is $? 0 "GBWTGraph to HashGraph conversion creates the correct reference paths"
+
+# GBWTGraph to XG with paths and walks
+vg convert -b components.gbwt -x components.gg > components.xg
+is $? 0 "GBWTGraph to XG conversion with reference paths"
+vg paths -A -v components.xg > xg_paths.gaf
+cmp xg_paths.gaf correct_paths.gaf
+is $? 0 "GBWTGraph to XG conversion creates the correct reference paths"
+
+# GBWTGraph to GFA with paths and walks
+vg convert -b components.gbwt -f components.gg > extracted.gfa
+is $? 0 "GBWTGraph to GFA conversion with paths and walks"
+cmp extracted.gfa graphs/components_paths_walks.gfa
+is $? 0 "GBWTGraph to GFA conversion creates the correct normalized GFA file"
+
+rm -f components.gbwt components.gg
+rm -f direct.hg correct_paths.gaf
+rm -f components.hg hg_paths.gaf
+rm -f components.xg xg_paths.gaf
+rm -f extracted.gfa
+
+# GFA Streaming
+vg convert -g tiny/tiny.gfa -p | vg convert -f - | sort > tiny.roundtrip.gfa
+vg convert tiny/tiny.gfa -p | vg convert -f - | sort > tiny.roundtrip2.gfa
+diff tiny.roundtrip.gfa tiny.roundtrip2.gfa
+is $? 0 "No difference roundtripping a GFA if it's loaded as a GFA or HandleGraph"
+
+grep -v "S	6" tiny/tiny.gfa > tiny.unsort.gfa
+grep "S	6" tiny/tiny.gfa >> tiny.unsort.gfa
+cat tiny.unsort.gfa | vg convert -p - 2> tiny.roundtrip3.stderr | vg convert -f - | sort > tiny.roundtrip3.gfa
+cat tiny.roundtrip3.stderr
+diff tiny.roundtrip.gfa tiny.roundtrip3.gfa
+is $? 0 "Streaming an unsorted GFA gives same output as sorted"
+is $(grep "warning:\[gfa\]" tiny.roundtrip3.stderr | wc -l) 1 "Warning given when falling back to temp GFA buffer file"
+
+cat tiny/tiny.gfa | vg convert -p - 2> tiny.roundtrip4.stderr | vg convert -f - | sort > tiny.roundtrip4.gfa
+cat tiny.roundtrip4.stderr
+diff tiny.roundtrip.gfa tiny.roundtrip4.gfa
+is $? 0 "Streaming an sorted GFA gives same output as reading from file"
+is $(cat tiny.roundtrip4.stderr | wc -l) 0 "No warnings given when streamed GFA is sorted"
+
+vg convert -g tiny/tiny.gfa | vg mod - -X 3 | vg convert -f - | vg ids -s - | sort > tiny.chop3.gfa
+vg mod -X 3 tiny/tiny.gfa | vg ids -s - | sort > tiny.chop3.1.gfa
+diff tiny.chop3.gfa tiny.chop3.1.gfa
+is $? 0 "Modding GFA directly produces same output as going through convert"
+cat tiny/tiny.gfa | vg mod -X 3 - | vg ids -s - | sort > tiny.chop3.2.gfa
+diff tiny.chop3.gfa tiny.chop3.2.gfa
+is $? 0 "Modding sorted GFA stream produces same output as going through convert"
+cat tiny.unsort.gfa | vg mod -X 3 - 2> tiny.chop3.3.stderr | vg ids -s - | sort > tiny.chop3.3.gfa
+cat tiny.chop3.3.stderr
+diff tiny.chop3.gfa tiny.chop3.3.gfa
+is $? 0 "Modding unsorted GFA stream produces same output as going through convert"
+is $(grep "warning:\[gfa\]" tiny.chop3.3.stderr | wc -l) 1 "Warning given when falling back to temp GFA buffer file in mod"
+vg mod -X 3 tiny.unsort.gfa 2> tiny.chop3.4.stderr | vg ids -s - | sort > tiny.chop3.4.gfa
+cat tiny.chop3.4.stderr
+diff tiny.chop3.gfa tiny.chop3.4.gfa
+is $? 0 "Modding unsorted GFA file produces same output as going through convert"
+is $(cat tiny.chop3.4.stderr | wc -l) 0 "No warnings given when input GFA file is unsorted"
+
+rm -f tiny.roundtrip.gfa tiny.roundtrip2.gfa tiny.roundtrip3.gfa tiny.roundtrip4.gfa
+rm -f tiny.roundtrip3.stderr tiny.roundtrip4.stderr
+rm -f tiny.unsort.gfa
+rm -f tiny.chop3.gfa tiny.chop3.1.gfa  tiny.chop3.2.gfa  tiny.chop3.3.gfa tiny.chop3.4.gfa
+rm -f tiny.chop3.3.stderr tiny.chop3.4.stderr
+
+vg view tiny/tiny.gfa | sort > tiny.rgfa.1
+cat tiny/tiny.gfa | vg view - | sort > tiny.rgfa.2
+diff tiny.rgfa.1 tiny.rgfa.2
+is $? 0 "rGFA handled consistently when streaming as when loaded from file"
+
+
+

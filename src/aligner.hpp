@@ -8,21 +8,14 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
-#include "gssw.h"
 #include <vg/vg.pb.h>
-#include "vg.hpp"
+
+#include "gssw.h"
 #include "Variant.h"
 #include "Fasta.h"
-#include "path.hpp"
-#include "utility.hpp"
-#include "statistics.hpp"
-#include "banded_global_aligner.hpp"
-#include "dozeu_interface.hpp"
 #include "handle.hpp"
-#include "reverse_graph.hpp"
-#include "null_masking_graph.hpp"
-#include "dozeu_pinning_overlay.hpp"
-#include "algorithms/distance_to_tail.hpp"
+#include "dozeu_interface.hpp"
+#include "deletion_aligner.hpp"
 
 // #define BENCH
 // #include "bench.h"
@@ -278,6 +271,7 @@ namespace vg {
         virtual int32_t remove_bonuses(const Alignment& aln, bool pinned = false, bool pin_left = false) const;
         
         // members
+        DeletionAligner deletion_aligner;
         int8_t* nt_table = nullptr;
         int8_t* score_matrix = nullptr;
         int8_t match;

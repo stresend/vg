@@ -1,22 +1,27 @@
-//
-//  multipath_mapper.hpp
-//
-//
-//
+/**
+ * \file multipath_mapper.hpp
+ *
+ * Defines the MultipathMapper class
+ */
 
 #ifndef multipath_mapper_hpp
 #define multipath_mapper_hpp
+
+#include <algorithm>
+#include <vg/vg.pb.h>
+#include <structures/union_find.hpp>
+#include <gbwt/gbwt.h>
+#include <vg/io/edit.hpp>
+#include <bdsg/hash_graph.hpp>
 
 #include "hash_map.hpp"
 #include "mapper.hpp"
 #include "aligner.hpp"
 #include "types.hpp"
 #include "multipath_alignment.hpp"
-#include <vg/vg.pb.h>
 #include "position.hpp"
 #include "nodeside.hpp"
 #include "path.hpp"
-#include "vg/io/edit.hpp"
 #include "snarls.hpp"
 #include "haplotypes.hpp"
 #include "min_distance.hpp"
@@ -32,26 +37,12 @@
 #include "split_strand_graph.hpp"
 #include "dagified_graph.hpp"
 
-#include "algorithms/topological_sort.hpp"
 #include "algorithms/extract_containing_graph.hpp"
 #include "algorithms/extract_connecting_graph.hpp"
 #include "algorithms/extract_extending_graph.hpp"
-#include "algorithms/topological_sort.hpp"
-#include "algorithms/weakly_connected_components.hpp"
-#include "algorithms/is_acyclic.hpp"
-#include "algorithms/is_single_stranded.hpp"
-#include "algorithms/split_strands.hpp"
-#include "algorithms/count_walks.hpp"
-#include "algorithms/dagify.hpp"
-#include "algorithms/reverse_complement.hpp"
-#include "algorithms/extend.hpp"
 #include "algorithms/jump_along_path.hpp"
-#include "algorithms/copy_graph.hpp"
+#include "algorithms/ref_path_distance.hpp"
 
-#include "bdsg/hash_graph.hpp"
-
-#include <structures/union_find.hpp>
-#include <gbwt/gbwt.h>
 
 // note: only activated for single end mapping
 //#define mpmap_instrument_mem_statistics
@@ -207,6 +198,8 @@ namespace vg {
         int64_t max_splice_overhang = 3;
         // about 250k
         int64_t max_intron_length = 1 << 18;
+        int64_t min_splice_ref_search_length = 6;
+        int64_t max_splice_ref_search_length = 32;
         
         //static size_t PRUNE_COUNTER;
         //static size_t SUBGRAPH_TOTAL;
@@ -221,13 +214,16 @@ namespace vg {
         /// actual extracted graph, a list of assigned MEMs, and the number of
         /// bases of read coverage that that MEM cluster provides (which serves
         /// as a priority).
-        using clustergraph_t = tuple<bdsg::HashGraph*, memcluster_t, size_t>;
+        using clustergraph_t = tuple<unique_ptr<bdsg::HashGraph>, memcluster_t, size_t>;
         
         /// Represents the mismatches that were allowed in "MEMs" from the fanout
         /// match algorithm
         using match_fanouts_t = unordered_map<const MaximalExactMatch*, deque<pair<string::const_iterator, char>>>;
         
     protected:
+        
+        /// Enum for the strand of a splice alignment's splice motifs
+        enum SpliceStrand {Undetermined, Forward, Reverse};
         
         /// Wrapped internal function that allows some code paths to circumvent the current
         /// mapping quality method option.
@@ -340,20 +336,23 @@ namespace vg {
         /// Return a graph (on the heap) that contains a cluster. The paired bool
         /// indicates whether the graph is known to be connected (but it is possible
         /// for the graph to be connected and have it return false)
-        pair<bdsg::HashGraph*, bool> extract_cluster_graph(const Alignment& alignment, const memcluster_t& mem_cluster) const;
+        pair<unique_ptr<bdsg::HashGraph>, bool> extract_cluster_graph(const Alignment& alignment,
+                                                                      const memcluster_t& mem_cluster) const;
         
         /// Extract a graph that is guaranteed to contain all local alignments that include
         /// the MEMs of the cluster.  The paired bool indicates whether the graph is
         /// known to be connected (but it is possible for the graph to be connected and have
         /// it return false)
-        pair<bdsg::HashGraph*, bool> extract_maximal_graph(const Alignment& alignment, const memcluster_t& mem_cluster) const;
+        pair<unique_ptr<bdsg::HashGraph>, bool> extract_maximal_graph(const Alignment& alignment,
+                                                                      const memcluster_t& mem_cluster) const;
         
         /// Extract a graph with an algorithm that tries to extract not much more than what
         /// is required to contain the cluster in a single connected component (can be slower
         /// than the maximal algorithm for alignments that require large indels),  The paired bool
         /// indicates whether the graph is known to be connected (but it is possible
         /// for the graph to be connected and have it return false)
-        pair<bdsg::HashGraph*, bool> extract_restrained_graph(const Alignment& alignment, const memcluster_t& mem_cluster) const;
+        pair<unique_ptr<bdsg::HashGraph>, bool> extract_restrained_graph(const Alignment& alignment,
+                                                                         const memcluster_t& mem_cluster) const;
         
         /// Returns the union of the intervals on the read that a cluster cover in sorted order
         vector<pair<int64_t, int64_t>> covered_intervals(const Alignment& alignment,
@@ -405,12 +404,16 @@ namespace vg {
                          vector<size_t>& agglomerated_group, unordered_set<pos_t>& agg_start_positions,
                          unordered_set<pos_t>& agg_end_positions) const;
         
-        void find_spliced_alignments(const Alignment& alignment, vector<multipath_alignment_t>& multipath_alns_out,
+        /// Look for spliced alignments among the results of various stages in the mapping algorithm
+        /// Returns true if any spliced alignments were made
+        bool find_spliced_alignments(const Alignment& alignment, vector<multipath_alignment_t>& multipath_alns_out,
                                      vector<double>& multiplicities, vector<size_t>& cluster_idxs,
                                      const vector<MaximalExactMatch>& mems, vector<clustergraph_t>& cluster_graphs,
                                      const match_fanouts_t* fanouts = nullptr);
         
-        void find_spliced_alignments(const Alignment& alignment1, const Alignment& alignment2,
+        /// Look for spliced alignments among the results of various stages in the mapping algorithm for pairs
+        /// Returns true if any spliced alignments were made
+        bool find_spliced_alignments(const Alignment& alignment1, const Alignment& alignment2,
                                      vector<pair<multipath_alignment_t, multipath_alignment_t>>& multipath_aln_pairs_out,
                                      vector<pair<pair<size_t, size_t>, int64_t>>& cluster_pairs,
                                      vector<double>& pair_multiplicities,
@@ -418,6 +421,8 @@ namespace vg {
                                      vector<clustergraph_t>& cluster_graphs1, vector<clustergraph_t>& cluster_graphs2,
                                      const match_fanouts_t* fanouts = nullptr);
         
+        /// Find candidates for spliced alignment sections for a given multipath alignment among the
+        /// aligned clusters
         void identify_aligned_splice_candidates(const Alignment& alignment, bool search_left,
                                                 const pair<int64_t, int64_t>& primary_interval,
                                                 const vector<multipath_alignment_t>& multipath_alns,
@@ -426,6 +431,8 @@ namespace vg {
                                                 unordered_set<size_t>& clusters_used_out,
                                                 vector<size_t>& mp_aln_candidates_out) const;
 
+        /// Find candidates for spliced alignment sections for a given multipath alignment among the
+        /// aligned cluster pairs
         void identify_aligned_splice_candidates(const Alignment& alignment, bool read_1, bool search_left,
                                                 const pair<int64_t, int64_t>& primary_interval,
                                                 const vector<pair<multipath_alignment_t, multipath_alignment_t>>& multipath_aln_pairs,
@@ -433,7 +440,9 @@ namespace vg {
                                                 const vector<int64_t>& current_index, int64_t anchor,
                                                 unordered_set<size_t>& clusters_used_out,
                                                 vector<size_t>& mp_aln_candidates_out) const;
-
+        
+        /// Find candidates for spliced alignment sections for a given multipath alignment among the
+        /// unaligned clusters and MEMs
         void identify_unaligned_splice_candidates(const Alignment& alignment, bool search_left,
                                                   const pair<int64_t, int64_t>& primary_interval,
                                                   const vector<MaximalExactMatch>& mems,
@@ -442,6 +451,7 @@ namespace vg {
                                                   vector<size_t>& cluster_candidates_out,
                                                   vector<pair<const MaximalExactMatch*, pos_t>>& hit_candidates_out) const;
         
+        /// Make alignments for the splice alignment cancidates from MEMs and unaligned clusters
         void align_to_splice_candidates(const Alignment& alignment,
                                         vector<clustergraph_t>& cluster_graphs,
                                         const vector<MaximalExactMatch>& mems,
@@ -453,24 +463,33 @@ namespace vg {
                                         vector<double>& multiplicities_out,
                                         const match_fanouts_t* mem_fanouts = nullptr) const;
         
+        /// Check whether splice segment candidates can form a statistically significant spliced
+        /// alignment. Returns true if a spliced alignment is made
         bool test_splice_candidates(const Alignment& alignment, bool searching_left,
                                     multipath_alignment_t& anchor_mp_aln, double& anchor_multiplicity,
-                                    int64_t num_candidates,
+                                    SpliceStrand& strand, int64_t num_candidates,
                                     const function<const multipath_alignment_t&(int64_t)>& get_candidate,
                                     const function<multipath_alignment_t&&(int64_t)>& consume_candidate);
         
-//        void test_splice_candidates(const Alignment& alignment, bool searching_left,
-//                                    vector<multipath_alignment_t>& multipath_alns,
-//                                    vector<double>& multiplicities,
-//                                    const vector<size_t>& mp_aln_candidates,
-//                                    vector<multipath_alignment_t>& unaligned_candidates,
-//                                    const vector<double>& unaligned_multiplicities);
+        /// Check if any of the unpaired spliced alignments can make pairs now
+        /// If any pairs are identified, can invalidate the input alignments
+        bool retry_pairing_spliced_alignments(const Alignment& alignment1, const Alignment& alignment2,
+                                              vector<multipath_alignment_t>& multipath_alns_1,
+                                              vector<multipath_alignment_t>& multipath_alns_2,
+                                              const vector<size_t>& cluster_idxs_1,
+                                              const vector<size_t>& cluster_idxs_2,
+                                              const vector<double>& multiplicities_1,
+                                              const vector<double>& multiplicities_2,
+                                              vector<pair<multipath_alignment_t, multipath_alignment_t>>& multipath_aln_pairs_out,
+                                              vector<pair<pair<size_t, size_t>, int64_t>>& cluster_pairs_out,
+                                              vector<double>& pair_multiplicities_out) const;
         
+
         /// Make a multipath alignment of the read against the indicated graph and add it to
         /// the list of multimappings.
         /// Does NOT necessarily produce a multipath_alignment_t in topological order.
-        void multipath_align(const Alignment& alignment, const bdsg::HashGraph* graph,
-                             memcluster_t& graph_mems,
+        void multipath_align(const Alignment& alignment,
+                             clustergraph_t& cluster_graph,
                              multipath_alignment_t& multipath_aln_out,
                              const match_fanouts_t* fanouts) const;
         
@@ -535,7 +554,7 @@ namespace vg {
         double fragment_length_log_likelihood(int64_t length) const;
         
         /// Computes the number of read bases a cluster of MEM hits covers.
-        static int64_t read_coverage(const memcluster_t& mem_hits);
+        static void set_read_coverage(clustergraph_t& cluster_graph);
         
         /// Would an alignment this good be expected against a graph this big by chance alone
         bool likely_mismapping(const multipath_alignment_t& multipath_aln);
@@ -552,6 +571,9 @@ namespace vg {
         /// Reorganizes the fan-out breaks into the format that MultipathAlignmentGraph wants it in
         match_fanouts_t record_fanouts(const vector<MaximalExactMatch>& mems,
                                        vector<deque<pair<string::const_iterator, char>>>& fanouts) const;
+        
+        /// Get a distance measurer based on the configuartion of the mapper
+        unique_ptr<OrientedDistanceMeasurer> get_distance_measurer(MemoizingGraph& memoizing_graph) const;
         
         /// Compute the approximate distance between two multipath alignments
         /// If either is unmapped, or the distance cannot be obtained, returns numeric_limits<int64_t>::max()
@@ -595,7 +617,7 @@ namespace vg {
         SpliceMotifs splice_motifs;
         SnarlManager* snarl_manager;
         MinimumDistanceIndex* distance_index;
-        PathComponentIndex* path_component_index = nullptr;
+        unique_ptr<PathComponentIndex> path_component_index;
         
         static const size_t RESCUED;
         

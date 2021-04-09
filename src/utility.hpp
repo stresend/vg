@@ -125,10 +125,11 @@ typename Collection::value_type sum(const Collection& collection) {
 
 
 /**
- * Temporary files. Create with create() and remove with remove(). All
- * temporary files will be deleted when the program exits normally or with
- * std::exit(). The files will be created in a directory determined from
- * environment variables, though this can be overridden with set_dir().
+ * Temporary files and directories. Create with create() or create_directory()
+ * and remove with remove(). All temporary files and directories will be
+ * deleted when the program exits normally or with std::exit(). The files will
+ * be created in a directory determined from environment variables, though this
+ * can be overridden with set_dir().
  * The interface is thread-safe.
  */
 namespace temp_file {
@@ -138,14 +139,19 @@ namespace temp_file {
 
     /// Create a temporary file
     string create();
+    
+    /// Create a temporary directory
+    string create_directory();
 
-    /// Remove a temporary file
+    /// Remove a temporary file or directory. File or directory must have been
+    /// created by create() or create_directory() and not any other means.
     void remove(const string& filename);
 
-    /// Set a temp dir, overriding system defaults and environment variables.
+    /// Set a directory for placing temporary files and directories in,
+    /// overriding system defaults and environment variables.
     void set_dir(const string& new_temp_dir);
 
-    /// Get the current temp dir
+    /// Get the current location for temporary files and directories.
     string get_dir();
 
 } // namespace temp_file
@@ -420,11 +426,15 @@ bool have_input_file(int& optind, int argc, char** argv);
 /// is not. Handles "-" as a filename as indicating standard input. The reference
 /// passed is guaranteed to be valid only until the callback returns. Bumps up
 /// optind to the next argument if a filename is found.
+///
+/// Warning: If you're reading a HandleGraph via VPKG::load_one (as is the pattern in vg)
+///          it is best to use get_input_file_name() below instead, and run load_one on that.
+///          This allows better GFA support because it allows memmapping the file directly
 void get_input_file(int& optind, int argc, char** argv, function<void(istream&)> callback);
 
 /// Parse out the name of an input file (i.e. the next positional argument), or
 /// throw an error. File name must be nonempty, but may be "-" or may not exist.
-string get_input_file_name(int& optind, int argc, char** argv);
+string get_input_file_name(int& optind, int argc, char** argv, bool test_open = true);
 
 /// Parse out the name of an output file (i.e. the next positional argument), or
 /// throw an error. File name must be nonempty.

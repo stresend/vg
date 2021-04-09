@@ -4,7 +4,8 @@
 
 #include "catch.hpp"
 #include "chunker.hpp"
-#include "readfilter.hpp"
+#include "vg.hpp"
+#include "xg.hpp"
 #include "path.hpp"
 
 namespace vg {

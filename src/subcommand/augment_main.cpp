@@ -280,9 +280,7 @@ int main_augment(int argc, char** argv) {
 
     // Read the graph
     unique_ptr<MutablePathMutableHandleGraph> graph;
-    get_input_file(graph_file_name, [&](istream& in) {
-            graph = vg::io::VPKG::load_one<MutablePathMutableHandleGraph>(in);
-        });
+    graph = vg::io::VPKG::load_one<MutablePathMutableHandleGraph>(graph_file_name);
     VG* vg_graph = dynamic_cast<VG*>(graph.get());
     HandleGraph* vectorizable_graph = nullptr;
     unique_ptr<Packer> packer;
@@ -293,7 +291,7 @@ int main_augment(int argc, char** argv) {
         vectorizable_graph = dynamic_cast<HandleGraph*>(overlay_helper.apply(graph.get()));
         size_t data_width = Packer::estimate_data_width(expected_coverage);
         size_t bin_count = Packer::estimate_bin_count(get_thread_count());
-        packer = make_unique<Packer>(vectorizable_graph, 0, bin_count, data_width, true, false, false);
+        packer = make_unique<Packer>(vectorizable_graph, true, false, false, false, 0, bin_count, data_width);
         // makes sure filters are activated. 
         min_coverage = max(size_t(min_coverage), size_t(1));
     }
@@ -431,4 +429,4 @@ int main_augment(int argc, char** argv) {
 }
 
 // Register subcommand
-static Subcommand vg_augment("augment", "augment a graph from an alignment", PIPELINE, 5, main_augment);
+static Subcommand vg_augment("augment", "augment a graph from an alignment", PIPELINE, 8, main_augment);

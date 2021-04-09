@@ -1,8 +1,10 @@
 #include <cstdint>
 #include "genotyper.hpp"
-#include "algorithms/topological_sort.hpp"
 #include "traversal_finder.hpp"
 #include "cactus_snarl_finder.hpp"
+#include "path_index.hpp"
+#include "utility.hpp"
+#include "translator.hpp"
 
 //#define debug
 

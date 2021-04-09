@@ -37,18 +37,40 @@ struct GFAFormatError : std::runtime_error {
 void gfa_to_handle_graph(const string& filename,
                          MutableHandleGraph* graph,
                          bool try_from_disk = true,
-                         bool try_id_increment_hint = false);
+                         bool try_id_increment_hint = false,
+                         const string& translation_filename = "");
 
 /// Same as gfa_to_handle_graph but also adds path elements from the GFA to the graph
 void gfa_to_path_handle_graph(const string& filename,
                               MutablePathMutableHandleGraph* graph,
                               bool try_from_disk = true,
-                              bool try_id_increment_hint = false);
+                              bool try_id_increment_hint = false,
+                              int64_t max_rgfa_rank = numeric_limits<int64_t>::max(),
+                              const string& translation_filename = "");
                               
 /// Same as above but operating on a stream. Assumed to be non-seekable; all conversion happens in memory.
 /// Always streaming. Doesn't support ID increment hints.
 void gfa_to_path_handle_graph_in_memory(istream& in,
-                                        MutablePathMutableHandleGraph* graph);
+                                        MutablePathMutableHandleGraph* graph,
+                                        int64_t max_rgfa_rank = numeric_limits<int64_t>::max());
+
+/// Operate on a stream line by line.  This can only work if the GFA is sorted.  If the GFA isn't
+/// sorted, dump it to a temp file, and fall back on gfa_to_path_handle_graph()
+void gfa_to_path_handle_graph_stream(istream& in,
+                                     MutablePathMutableHandleGraph* graph,
+                                     int64_t max_rgfa_rank = numeric_limits<int64_t>::max());
+
+
+/// gfakluge can't parse line by line, which we need for streaming
+/// ideally, it needs to be entirely replaced.  here's a bare minimum for parsing lines
+/// in the meantime.  they return the fields as strings, don't support overlaps, and
+/// optional tags get read as strings in the vectors. 
+tuple<string, string, vector<string>> parse_gfa_s_line(const string& s_line);
+tuple<string, bool, string, bool, vector<string>> parse_gfa_l_line(const string& l_line);
+/// visit_step takes {path-name, rank (-1 if path empty), step id, step reversed}
+/// and returns true if it wants to keep iterating (false means stop)
+void parse_gfa_p_line(const string& p_line,
+                      function<bool(const string&, int64_t, const string&, bool)> visit_step);
 
 
 }

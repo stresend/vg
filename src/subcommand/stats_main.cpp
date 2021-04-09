@@ -17,13 +17,9 @@
 #include "subcommand.hpp"
 #include "../algorithms/distance_to_head.hpp"
 #include "../algorithms/distance_to_tail.hpp"
-#include "../algorithms/find_tips.hpp"
-#include "../algorithms/is_acyclic.hpp"
-#include "../algorithms/strongly_connected_components.hpp"
-#include "../algorithms/weakly_connected_components.hpp"
-#include "../algorithms/copy_graph.hpp"
 #include "../handle.hpp"
 #include "../cactus_snarl_finder.hpp"
+#include "../annotation.hpp"
 
 #include "../path.hpp"
 #include "../statistics.hpp"
@@ -34,6 +30,7 @@
 #include "bdsg/hash_graph.hpp"
 #include "bdsg/odgi.hpp"
 #include "../io/converted_hash_graph.hpp"
+#include "../io/save_handle_graph.hpp"
 
 using namespace std;
 using namespace vg;
@@ -47,9 +44,11 @@ void help_stats(char** argv) {
          << "    -N, --node-count      number of nodes in graph" << endl
          << "    -E, --edge-count      number of edges in graph" << endl
          << "    -l, --length          length of sequences in graph" << endl
+         << "    -L, --self-loops      number of self-loops" << endl
          << "    -s, --subgraphs       describe subgraphs of graph" << endl
          << "    -H, --heads           list the head nodes of the graph" << endl
          << "    -T, --tails           list the tail nodes of the graph" << endl
+         << "    -e, --nondeterm       list the nondeterministic edge sets" << endl
          << "    -c, --components      print the strongly connected components of the graph" << endl
          << "    -A, --is-acyclic      print if the graph is acyclic or not" << endl
          << "    -n, --node ID         consider node with the given id" << endl
@@ -78,9 +77,11 @@ int main_stats(int argc, char** argv) {
 
     bool stats_size = false;
     bool stats_length = false;
+    bool stats_self_loops = false;
     bool stats_subgraphs = false;
     bool stats_heads = false;
     bool stats_tails = false;
+    bool stats_nondeterm = false;
     bool show_sibs = false;
     bool show_components = false;
     bool head_distance = false;
@@ -109,9 +110,11 @@ int main_stats(int argc, char** argv) {
             {"node-count", no_argument, 0, 'N'},
             {"edge-count", no_argument, 0, 'E'},
             {"length", no_argument, 0, 'l'},
+            {"self-loops", no_argument, 0, 'L'},
             {"subgraphs", no_argument, 0, 's'},
             {"heads", no_argument, 0, 'H'},
             {"tails", no_argument, 0, 'T'},
+            {"nondeterm", no_argument, 0, 'e'},
             {"help", no_argument, 0, 'h'},
             {"components", no_argument, 0, 'c'},
             {"to-head", no_argument, 0, 'd'},
@@ -130,7 +133,7 @@ int main_stats(int argc, char** argv) {
         };
 
         int option_index = 0;
-        c = getopt_long (argc, argv, "hzlsHTcdtn:NEa:vAro:ORFD",
+        c = getopt_long (argc, argv, "hzlLsHTecdtn:NEa:vAro:ORFD",
                 long_options, &option_index);
 
         // Detect the end of the options.
@@ -155,6 +158,10 @@ int main_stats(int argc, char** argv) {
             stats_length = true;
             break;
 
+        case 'L':
+            stats_self_loops = true;
+            break;
+
         case 's':
             stats_subgraphs = true;
             break;
@@ -165,6 +172,10 @@ int main_stats(int argc, char** argv) {
 
         case 'T':
             stats_tails = true;
+            break;
+
+        case 'e':
+            stats_nondeterm = true;
             break;
 
         case 'S':
@@ -274,9 +285,20 @@ int main_stats(int argc, char** argv) {
         cout << "length" << "\t" << graph->get_total_length() << endl;
     }
 
+    if (stats_self_loops) {
+        require_graph();
+        size_t total = 0;
+        graph->for_each_edge([&](const edge_t& edge) {
+            if (graph->get_id(edge.first) == graph->get_id(edge.second)) {
+                total++;
+            }
+        });
+        cout << "self-loops" << "\t" << total << endl;
+    }
+
     if (stats_heads) {
         require_graph();
-        vector<handle_t> heads = algorithms::head_nodes(graph.get());
+        vector<handle_t> heads = handlealgs::head_nodes(graph.get());
         cout << "heads" << "\t";
         for (auto& h : heads) {
             cout << graph->get_id(h) << " ";
@@ -286,12 +308,34 @@ int main_stats(int argc, char** argv) {
 
     if (stats_tails) {
         require_graph();
-        vector<handle_t> tails = algorithms::tail_nodes(graph.get());
+        vector<handle_t> tails = handlealgs::tail_nodes(graph.get());
         cout << "tails" << "\t";
         for (auto& t : tails) {
             cout << graph->get_id(t) << " ";
         }
         cout << endl;
+    }
+
+    if (stats_nondeterm) {
+        require_graph();
+        graph->for_each_handle([&](const handle_t& handle) {
+            nid_t id = graph->get_id(handle);
+            for (bool is_reverse : { false, true }) {
+                std::map<char, std::vector<handle_t>> edges;
+                graph->follow_edges(graph->get_handle(id, is_reverse), false, [&](const handle_t& to) {
+                    edges[graph->get_base(to, 0)].push_back(to);
+                });
+                for (auto iter = edges.begin(); iter != edges.end(); ++iter) {
+                    if (iter->second.size() > 1) {
+                        std::cout << "nondeterministic\t" << id << (is_reverse ? "-" : "+");
+                        for (const handle_t& to : iter->second) {
+                            std::cout << "\t" << graph->get_id(to) << (graph->get_is_reverse(to) ? "-" : "+");
+                        }
+                        std::cout << std::endl;
+                    }
+                }
+            }
+        });
     }
 
     if (stats_subgraphs) {
@@ -301,7 +345,7 @@ int main_stats(int argc, char** argv) {
         // but this isn't really explained.
         
         vector<pair<unordered_set<nid_t>, vector<handle_t>>> subgraphs_with_tips =
-            algorithms::weakly_connected_components_with_tips(graph.get());
+            handlealgs::weakly_connected_components_with_tips(graph.get());
         
         for (auto& subgraph_and_tips : subgraphs_with_tips) {
             // For each subgraph set and its inward tip handles
@@ -343,7 +387,7 @@ int main_stats(int argc, char** argv) {
 
     if (show_components) {
         require_graph();
-        for (auto& c : algorithms::strongly_connected_components(graph.get())) {
+        for (auto& c : handlealgs::strongly_connected_components(graph.get())) {
             for (auto& id : c) {
                 cout << id << ", ";
             }
@@ -353,7 +397,7 @@ int main_stats(int argc, char** argv) {
 
     if (is_acyclic) {
         require_graph();
-        if (algorithms::is_acyclic(graph.get())) {
+        if (handlealgs::is_acyclic(graph.get())) {
             cout << "acyclic" << endl;
         } else {
             cout << "cyclic" << endl;
@@ -383,6 +427,9 @@ int main_stats(int argc, char** argv) {
         string format_string;
         if (dynamic_cast<xg::XG*>(graph.get()) != nullptr) {
             format_string = "XG";
+        } else if (dynamic_cast<GFAHandleGraph*>(graph.get()) != nullptr) {
+            // important this check comes before PackedGraph
+            format_string = "GFA";
         } else if (dynamic_cast<bdsg::PackedGraph*>(graph.get()) != nullptr) {
             format_string = "PackedGraph";
         } else if (dynamic_cast<vg::io::ConvertedHashGraph*>(graph.get()) != nullptr) {
@@ -429,7 +476,7 @@ int main_stats(int argc, char** argv) {
         if (vg_graph == nullptr) {
             // TODO: This path overlap code can be handle-ified, and should be.
             vg_graph = new vg::VG();
-            algorithms::copy_path_handle_graph(graph.get(), vg_graph);
+            handlealgs::copy_path_handle_graph(graph.get(), vg_graph);
             // Give the unique_ptr ownership and delete the graph we loaded.
             graph.reset(vg_graph);
             // Make sure the paths are all synced up
@@ -548,6 +595,9 @@ int main_stats(int argc, char** argv) {
             // And softclips
             size_t total_softclips = 0;
             size_t total_softclipped_bases = 0;
+            // And pairing
+            size_t total_paired = 0;
+            size_t total_proper_paired = 0;
 
             // In verbose mode we want to report details of insertions, deletions,
             // and substitutions, and soft clips.
@@ -582,6 +632,8 @@ int main_stats(int argc, char** argv) {
                 total_substituted_bases += other.total_substituted_bases;
                 total_softclips += other.total_softclips;
                 total_softclipped_bases += other.total_softclipped_bases;
+                total_paired += other.total_paired;
+                total_proper_paired += other.total_proper_paired;
                 
                 std::copy(other.insertions.begin(), other.insertions.end(), std::back_inserter(insertions));
                 std::copy(other.deletions.begin(), other.deletions.end(), std::back_inserter(deletions));
@@ -693,6 +745,13 @@ int main_stats(int argc, char** argv) {
                     // the primary can't be unaligned if the secondary is
                     // aligned.
                     stats.total_aligned++;
+                }
+                
+                if (aln.has_fragment_next() || aln.has_fragment_prev() || has_annotation(aln, "proper_pair")) {
+                    stats.total_paired++;
+                    if (has_annotation(aln, "proper_pair") && get_annotation<bool>(aln, "proper_pair")) {
+                        stats.total_proper_paired++;
+                    }
                 }
 
                 // Which sites and alleles does this read support. TODO: if we hit
@@ -906,6 +965,8 @@ int main_stats(int argc, char** argv) {
         cout << "Total aligned: " << combined.total_aligned << endl;
         cout << "Total perfect: " << combined.total_perfect << endl;
         cout << "Total gapless (softclips allowed): " << combined.total_gapless << endl;
+        cout << "Total paired: " << combined.total_paired << endl;
+        cout << "Total properly paired: " << combined.total_proper_paired << endl;
 
         cout << "Insertions: " << combined.total_inserted_bases << " bp in " << combined.total_insertions << " read events" << endl;
         if(verbose) {
@@ -935,7 +996,7 @@ int main_stats(int argc, char** argv) {
                     << " on " << id_and_edit.first << endl;
             }
         }
-
+        
         if (graph.get() != nullptr) {
             cout << "Unvisited nodes: " << unvisited_nodes << "/" << graph->get_node_count()
                 << " (" << unvisited_node_bases << " bp)" << endl;

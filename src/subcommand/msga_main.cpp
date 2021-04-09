@@ -6,9 +6,9 @@
 #include <vg/io/vpkg.hpp>
 #include "../kmer.hpp"
 #include "../build_index.hpp"
-#include "../algorithms/topological_sort.hpp"
 #include "../algorithms/normalize.hpp"
-#include "../algorithms/copy_graph.hpp"
+#include "../algorithms/prune.hpp"
+#include "../algorithms/path_string.hpp"
 #include "../chunker.hpp"
 #include "xg.hpp"
 
@@ -86,6 +86,12 @@ void help_msga(char** argv) {
 
 int main_msga(int argc, char** argv) {
 
+    cerr << "!!!" << endl;
+    cerr << "WARNING" << endl;
+    cerr << "!!!" << endl;
+    cerr << "vg msga was an early prototype for constructing genome graphs from multiple sequence alignments, but it is no longer state-of-the-art or even actively maintained. VG team members have developed improved graph construction algorithms in Cactus and PGGB, and several other tools have been developed by other groups." << endl << endl;
+    
+    
     if (argc == 2) {
         help_msga(argv);
         return 1;
@@ -429,7 +435,7 @@ int main_msga(int argc, char** argv) {
         if (graph == nullptr) {
             // Copy instead.
             graph = new vg::VG();
-            algorithms::copy_path_handle_graph(loaded.get(), graph);
+            handlealgs::copy_path_handle_graph(loaded.get(), graph);
             // Make sure the paths are all synced up
             graph->paths.to_graph(graph->graph);
         }
@@ -512,7 +518,7 @@ int main_msga(int argc, char** argv) {
     if (graph->empty()) {
         auto build_graph = [&graph,&node_max](const string& seq, const string& name) {
             graph->create_node(seq);
-            graph->dice_nodes(node_max);
+            handlealgs::chop(graph, node_max);
             graph->sort();
             graph->compact_ids();
             // the graph will have a single embedded path in it
@@ -616,7 +622,9 @@ int main_msga(int argc, char** argv) {
             vg::id_t tail_id = head_id+1;
             graph->paths.for_each_name([&](const string& name) {
                     VG path_graph = *graph;
-                    if (edge_max) path_graph.prune_complex_with_head_tail(idx_kmer_size, edge_max);
+                    if (edge_max){
+                        algorithms::prune_complex_with_head_tail(path_graph, idx_kmer_size, edge_max);
+                    }
                     path_graph.keep_path(name);
                     size_t limit = ~(size_t)0;
                     tmpfiles.push_back(
@@ -637,8 +645,10 @@ int main_msga(int argc, char** argv) {
         } else if (edge_max) {
             VG gcsa_graph = *graph; // copy the graph
             // remove complex components
-            gcsa_graph.prune_complex_with_head_tail(idx_kmer_size, edge_max);
-            if (subgraph_prune) gcsa_graph.prune_short_subgraphs(subgraph_prune);
+            algorithms::prune_complex_with_head_tail(gcsa_graph, idx_kmer_size, edge_max);
+            if (subgraph_prune){
+                algorithms::prune_short_subgraphs(gcsa_graph, subgraph_prune);
+            }
             // then index
             build_gcsa_lcp(gcsa_graph, gcsaidx, lcpidx, idx_kmer_size, doubling_steps);
         } else {
@@ -718,7 +728,7 @@ int main_msga(int argc, char** argv) {
             Alignment aln = mapper->align(seq, 0, 0, 0, band_width, band_overlap, xdrop_alignment);
             aln.set_name(name);
             if (aln.path().mapping_size()) {
-                auto aln_seq = graph->path_string(aln.path());
+                auto aln_seq = algorithms::path_string(*graph, aln.path());
                 if (aln_seq != seq) {
                     cerr << "[vg msga] alignment corrupted, failed to obtain correct banded alignment (alignment seq != input seq)" << endl;
                     cerr << "expected " << seq << endl;
@@ -756,7 +766,7 @@ int main_msga(int argc, char** argv) {
             //if (!graph->is_valid()) cerr << "invalid after edit" << endl;
             //graph->serialize_to_file(name + "-immed-post-edit.vg");
             if (normalize) algorithms::normalize(graph, 10, debug);
-            graph->dice_nodes(node_max);
+            handlealgs::chop(graph, node_max);
             //if (!graph->is_valid()) cerr << "invalid after dice" << endl;
             //graph->serialize_to_file(name + "-post-dice.vg");
             if (debug) cerr << name << ": sorting and compacting ids" << endl;
@@ -784,7 +794,7 @@ int main_msga(int argc, char** argv) {
 
             // verfy validity of path
             bool is_valid = graph->is_valid();
-            auto path_seq = graph->path_string(graph->paths.path(name));
+            auto path_seq = algorithms::path_string(*graph, graph->paths.path(name));
             incomplete = !(path_seq == seq) || !is_valid;
             if (incomplete) {
                 cerr << "[vg msga] failed to include alignment, retrying " << endl
@@ -843,7 +853,7 @@ int main_msga(int argc, char** argv) {
             graph->remove_non_path();
         }
         algorithms::normalize(graph);
-        graph->dice_nodes(node_max);
+        handlealgs::chop(graph, node_max);
         graph->sort();
         graph->compact_ids();
         if (!graph->is_valid()) {
@@ -856,7 +866,7 @@ int main_msga(int argc, char** argv) {
     for (auto& sp : strings) {
         auto& name = sp.first;
         auto& seq = sp.second;
-        if (seq != graph->path_string(graph->paths.path(name))) {
+        if (seq != algorithms::path_string(*graph, graph->paths.path(name))) {
             /*
                cerr << "failed inclusion" << endl
                << "expected " << graph->path_string(graph->paths.path(name)) << endl
@@ -910,4 +920,4 @@ int main_msga(int argc, char** argv) {
     return 0;
 }
 
-static Subcommand vg_msga("msga", "multiple sequence graph alignment", main_msga);
+static Subcommand vg_msga("msga", "multiple sequence graph alignment", DEPRECATED, main_msga);
