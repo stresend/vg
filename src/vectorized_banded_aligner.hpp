@@ -12,9 +12,10 @@
 #include<immintrin.h>
 #include<algorithm>
 #include<iostream>
+#include<deque>
+#include<list>
 
 #include "handle.hpp"
-#include "algorithms/topological_sort.hpp"
 
 namespace vg {
 
@@ -29,14 +30,16 @@ struct BandedVectorMatrix;
  */
 struct AlignerInstance {
     BandedVectorMatrix* matrices;
-    int num_nodes;
-    HandleGraph* graph;
+    const HandleGraph* graph;
     Alignment* alignment;
-    handle_t* topological_order;
-    int16_t gap_open;
-    int16_t gap_extend;
-    unordered_map<int, int> node_id_to_idx;
+    int band_padding;
+    unordered_map<handle_t, int> handle_to_idx;
+    vector<handle_t> topological_order;
+    vector<handle_t> source_nodes;
+    vector<handle_t> sink_nodes;
 };
+
+enum matrix_t {Match, InsertCol, InsertRow};
 
 /*
  * Core aligner object for vectorized banded global alignment
@@ -44,35 +47,35 @@ struct AlignerInstance {
 struct BandedVectorAligner {
     
     // constructor
-    static BandedVectorAligner* init(int8_t* score_mat, int8_t* nt_table, int16_t gap_open, int16_t gap_extend, bool adjust_for_base_quality = false);
+    static BandedVectorAligner* init(const int8_t* score_mat, int8_t* nt_table, int16_t gap_open, int16_t gap_extend, bool adjust_for_base_quality = false);
     // destructor
     void destroy();
     // builds AlignerInstance within BandedVectorAligner
-    void new_instance(AlignerInstance* instance, HandleGraph* graph, Alignment* alignment, vector<handle_t>& topological_order, int16_t gap_open, int16_t gap_extend);
+    void new_instance(const HandleGraph& graph, Alignment& alignment, int32_t band_padding);
     
-    //aligns instance currently stored in aligner
+    void path_lengths_to_sinks(AlignerInstance* instance, vector<int>& shortest_path_to_sink, vector<int>& longest_path_to_sink);
+
+    void find_banded_paths(AlignerInstance* instance, vector<bool>& node_masked, vector<pair<int, int>>& band_ends);
+
+    // aligns instance currently stored in aligner
     void align_instance();
 
-    //functions to manipulate BandedVectorAligner
-    void change_scoring(int8_t* score_mat);
-
-    void change_nt_table(int8_t* nt_table);// I can see this not being useful, but I'll include it either way
-
-    void change_adjust_for_base_quality(bool adjust_for_base_quality);//is this name too long?
-
-    // TODO: add get() functions as needed
-
+	// Traceback through dynamic programming matrices to compute alignment
+	void traceback();
     // TODO: design more interface
-    
+    void shortest_seq_paths(vector<int64_t>& seq_lens_out);
 private:
 
     int8_t* score_mat;
     int8_t* nt_table;
+    int16_t gap_extend;
+    int16_t gap_open;
     bool adjust_for_base_quality;
     BandedVectorHeap* heap;
     AlignerInstance* current_instance;
     
 public:
+   
     // delete all constructors, assignents operators, and the destructor
     BandedVectorAligner() = delete;
     ~BandedVectorAligner() = delete;
@@ -81,6 +84,34 @@ public:
     BandedVectorAligner& operator=(BandedVectorAligner&& other) = delete;
     BandedVectorAligner& operator=(const BandedVectorAligner& other) = delete;
 };
+
+struct VBBuilder {
+public:
+	VBBuilder(Alignment& alignment);
+	~VBBuilder();
+	
+	/// Add next step in traceback
+	void update_state(const HandleGraph& graph, matrix_t matrix, const handle_t& node, int64_t read_idx,
+					  int64_t node_idx, bool empty_node_seq = false);
+	/// Call after concluding traceback to finish adding edits to alignment
+	void finalize_alignment();
+	
+private:
+	Alignment& alignment;
+	
+	deque<Mapping> node_mappings;
+	deque<Edit> mapping_edits;
+	
+	matrix_t matrix_state;
+	bool matching = false;
+	id_t current_node_id = 0;
+	string current_node_sequence = "";
+	int64_t edit_length = 0;
+	int64_t edit_read_end_idx = 0;
+	
+	void finish_current_edit();
+	void finish_current_node();
+}; 
 
 /*
  * A heap that allocates 16-byte aligned memory pointers and allows
@@ -158,79 +189,90 @@ struct SWVector {
 };
 
 struct BandedVectorMatrix {
+    public:
+        // returns whether a coordinate in the full matrix is inside
+        // the band
+        bool is_inside_band(int i, int j);
 
-    // returns whether a coordinate in the full matrix is inside
-    // the band
-    bool is_inside_band(int i, int j);
+        // returns the index of the vector that contains a coordinate
+        // from the full matrix
+        int vector_index(int i, int j);
 
-    // returns the index of the vector that contains a coordinate
-    // from the full matrix
-    int vector_index(int i, int j);
+        // returns the index within the vector conaining these
+        // coordinates that corresponds to this exact coordinate
+        int index_within_vector(int i, int j);
 
-    // returns the index within the vector conaining these
-    // coordinates that corresponds to this exact coordinate
-    int index_within_vector(int i, int j);
+        // returns coordinates in the full matrix that correspond
+        // to an entry in a given vector
+        pair<int, int> coordinate(int vec_idx, int idx_within_vec);
 
-    // returns coordinates in the full matrix that correspond
-    // to an entry in a given vector
-    pair<int, int> coordinate(int vec_idx, int idx_within_vec);
+        // returns the index of the vector that corresponds to the
+        // entries directly above the indicated vector in the full matrix
+        int vector_above(int vec_idx);
 
-    // returns the index of the vector that corresponds to the
-    // entries directly above the indicated vector in the full matrix
-    int vector_above(int vec_idx);
+        // returns the index of the vector that corresponds to the
+        // entries directly below the indicated vector in the full matrix
+        int vector_below(int vec_idx);
 
-    // returns the index of the vector that corresponds to the
-    // entries directly below the indicated vector in the full matrix
-    int vector_below(int vec_idx);
-
-    // returns the index of the vector that corresponds to the
-    // entries up and to the left of the indicated vector in the
-    // full matrix
-    int vector_diagonal(int vec_idx);
+        // returns the index of the vector that corresponds to the
+        // entries up and to the left of the indicated vector in the
+        // full matrix
+        int vector_diagonal(int vec_idx);
    
-    // returns number of vectors in band
-    int get_band_size();
-    //fill matrix function. this is where the dynamic programming is
-    void fill_matrix(BandedVectorHeap* heap, int8_t* score_mat, int8_t* nt_table, bool qual_adjusted);
+        // returns number of vectors in band
+        int get_band_size();
+		
+		int16_t get_score_at(matrix_t mat, int i, int j);
+		
+        //fill matrix function. this is where the dynamic programming is
+        void fill_matrix(AlignerInstance* instance, BandedVectorHeap* heap, int8_t* score_mat, int8_t* nt_table, int16_t gap_open, int16_t gap_extend, bool qual_adjusted);
     
-    // returns scores used in dynamic programming
-    void query_forward(int8_t* query, int8_t* score_mat, int8_t* nt_table, char node_char, int col_num);
+        // returns scores used in dynamic programming
+        void query_forward(int8_t* query, int8_t* score_mat, int8_t* nt_table, char node_char, int col_num);
     
-    // updates vector at idx using query
-    int update_vector(__m128i& left_insert_col, __m128i& left_match, int8_t* query, int query_idx, int idx);
+        // updates vector at idx using query
+        int update_vector(__m128i& left_insert_col, __m128i& left_match, int16_t gap_open, int16_t gap_extend, int8_t* query, int query_idx, int idx);
 
-    // function used to only update first column
-    void update_first_column(int8_t* query);
+        // function used to only update first column
+        void update_first_column(int8_t* score_mat, int8_t* nt_table, int16_t gap_open, int16_t gap_extend, int8_t* query);
     
-    // returns vectors starting at row y  
-    __m128i get_vector_match(BandedVectorMatrix* seed, int y);
-    __m128i get_vector_insert_col(BandedVectorMatrix* seed, int y);
+        // returns vectors starting at row y  
+        __m128i get_vector_match(BandedVectorMatrix* seed, int y);
+        __m128i get_vector_insert_col(BandedVectorMatrix* seed, int y);
     
-    //debugging: prints full matrix
-    void print_full_matrix();
-    //debugging: prints matrix as rectangularized band
-    void print_rectangularized_band();
+    	void traceback(const HandleGraph& graph, VBBuilder& builder,
+                                                       int64_t& i, int64_t& j, matrix_t& mat, bool& in_lead_gap,
+                                                       const int8_t* score_mat, const int8_t* nt_table,
+                                                       const int8_t gap_open,  const int8_t gap_extend);
+        
 
-    SWVector* vectors; 
-    int64_t first_diag;
-    int64_t num_diags;
-    int64_t num_cols;
-    Alignment* alignment;
-    handle_t node;
-    string node_seq;
-    int8_t* query;
-    int8_t* score_mat;
-    int8_t* nt_table;
-    int16_t gap_open;
-    int16_t gap_extend;
+        void traceback_over_edge(const HandleGraph& graph, Alignment& alignment, VBBuilder& builder,
+                                                                 int64_t& i, int64_t& j, matrix_t& mat,
+                                                                 bool& in_lead_gap, int64_t& node_id,
+                                                                 const int8_t* score_mat, const int8_t* nt_table,
+                                                                 const int8_t gap_open, const int8_t gap_extend);
+        //debugging: prints full matrix
+        void print_full_matrix();
+        //debugging: prints matrix as rectangularized band
+        void print_rectangularized_band();
 
-    BandedVectorMatrix** seeds;
-    int number_of_seeds;
-    bool is_source;
+        SWVector* vectors; 
+        int64_t first_diag;
+        int64_t num_diags;
+        int64_t num_cols;
+		int64_t cumulative_seq_len;
+        Alignment* alignment;
+        handle_t node;
+        string node_seq;
+        int8_t* query;
+        BandedVectorMatrix** seeds;
+        int number_of_seeds;
+        bool is_source;
+
 };
 
-void init_BandedVectorMatrix(BandedVectorMatrix& matrix, BandedVectorHeap* heap, AlignerInstance* instance, int8_t* score_mat, int8_t* nt_table,
-        handle_t node, int64_t first_diag, int64_t num_diags, int64_t num_cols);
+void init_BandedVectorMatrix(BandedVectorMatrix& matrix, BandedVectorHeap* heap, AlignerInstance* instance,
+        handle_t node, int64_t first_diag, int64_t num_diags, int64_t num_cols, int64_t cumulative_seq_len);
 
 }
 

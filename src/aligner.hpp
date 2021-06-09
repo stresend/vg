@@ -16,6 +16,7 @@
 #include "handle.hpp"
 #include "dozeu_interface.hpp"
 #include "deletion_aligner.hpp"
+#include "vectorized_banded_aligner.hpp"
 
 // #define BENCH
 // #include "bench.h"
@@ -380,8 +381,12 @@ namespace vg {
                             bool pinned, bool pin_left, int32_t max_alt_alns,
                             bool traceback_aln) const;
         
+        // internal function for align_global_banded
+        void align_global_banded_internal(Alignment& alignment, const HandleGraph& g,
+                                 int32_t band_padding = 0, bool permissive_banding = true, bool vectorized = true) const;
         // members
         vector<XdropAligner> xdrops;
+        vector<BandedVectorAligner*> vectorized_aligner;
     };
 
     /**
@@ -445,7 +450,7 @@ namespace vg {
                             bool traceback_aln) const;
         
         int8_t* qual_adj_full_length_bonuses = nullptr;
-
+		
         // members
         vector<QualAdjXdropAligner> xdrops;
     };

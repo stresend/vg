@@ -1012,6 +1012,12 @@ Aligner::Aligner(const int8_t* _score_matrix,
     for (size_t i = 0; i < num_threads; ++i) {
         xdrops.emplace_back(_score_matrix, _gap_open, _gap_extension);
     }
+	
+	// make a banded_vector_aligner per thread
+	vectorized_aligner.reserve(num_threads);
+	for(size_t i = 0; i < num_threads; i++){
+		vectorized_aligner.emplace_back(BandedVectorAligner::init(_score_matrix, nt_table, _gap_open, _gap_extension, false));
+	}
 }
 
 void Aligner::align_internal(Alignment& alignment, vector<Alignment>* multi_alignments, const HandleGraph& g,
@@ -1235,6 +1241,24 @@ void Aligner::align_internal(Alignment& alignment, vector<Alignment>* multi_alig
     // bench_end(bench);
 }
 
+void Aligner::align_global_banded_internal(Alignment& alignment, const HandleGraph& g,
+                                 int32_t band_padding, bool permissive_banding, bool vectorized) const{
+    if (vectorized) {
+		BandedVectorAligner* vector_aligner = vectorized_aligner[omp_get_thread_num()];
+        vector_aligner->new_instance(g, alignment, band_padding);
+		vector_aligner->align_instance();
+    } else {
+        // We'll fit in int16
+        BandedGlobalAligner<int16_t> band_graph(alignment,
+                                                g,
+                                                band_padding,
+                                                permissive_banding,
+                                                false);
+        
+        band_graph.align(score_matrix, nt_table, gap_open, gap_extension);
+    }
+}
+
 void Aligner::align(Alignment& alignment, const HandleGraph& g, bool traceback_aln) const {
     
     align_internal(alignment, nullptr, g, false, false, 1, traceback_aln);
@@ -1456,8 +1480,11 @@ void Aligner::align_global_banded_multi(Alignment& alignment, vector<Alignment>&
                                                false);
         
         band_graph.align(score_matrix, nt_table, gap_open, gap_extension);
-    } else if (best_score <= numeric_limits<int16_t>::max() && worst_score >= numeric_limits<int16_t>::min()) {
+    } else if (max_alt_alns == 1 && best_score <= numeric_limits<int16_t>::max() && worst_score >= numeric_limits<int16_t>::min()) {
         // We'll fit in int16
+		align_global_banded_internal(alignment, g, band_padding, true, true);
+	} else if (best_score <= numeric_limits<int16_t>::max() && worst_score >= numeric_limits<int16_t>::min()) {
+		 // We'll fit in int16
         BandedGlobalAligner<int16_t> band_graph(alignment,
                                                 g,
                                                 alt_alignments,
